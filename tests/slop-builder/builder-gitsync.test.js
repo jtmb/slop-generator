@@ -47,18 +47,18 @@ describe('builder git-sync — branch naming', () => {
   it('pushes to orphan branch build/{slug} with project-isolating .gitignore', async () => {
     // existsSync('.git') returns true → git init skipped
     // Call sequence: config user.name, config user.email, branch, checkout --orphan,
-    //                rm, add, status --porcelain, commit, remote, push
+    //                add, status --porcelain, commit, remote, push
+    // (git rm is skipped on new orphan branches — working tree already has project files)
     mockSpawnSync
       .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' })       // 1: git config user.name
       .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' })       // 2: git config user.email
       .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' })       // 3: git branch ('' → no existing branch)
       .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' })       // 4: git checkout --orphan build/eco-track
-      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' })       // 5: git rm -rf
-      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' })       // 6: git add -A
-      .mockReturnValueOnce({ status: 0, stdout: 'A  projects/eco-track/file.js\n', stderr: '' }) // 7: git status --porcelain
-      .mockReturnValueOnce({ status: 0, stdout: '[build/eco-track abc123] feat: done', stderr: '' }) // 8: git commit
-      .mockReturnValueOnce({ status: 0, stdout: 'origin\n', stderr: '' }) // 9: git remote
-      .mockReturnValueOnce({ status: 0, stdout: '', stderr: 'To github.com... build/eco-track' }); // 10: git push
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' })       // 5: git add -A
+      .mockReturnValueOnce({ status: 0, stdout: 'A  projects/eco-track/file.js\n', stderr: '' }) // 6: git status --porcelain
+      .mockReturnValueOnce({ status: 0, stdout: '[build/eco-track abc123] feat: done', stderr: '' }) // 7: git commit
+      .mockReturnValueOnce({ status: 0, stdout: 'origin\n', stderr: '' }) // 8: git remote
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: 'To github.com... build/eco-track' }); // 9: git push
 
     await import('../../slop-builder/scripts/git-sync.js');
 

@@ -107,6 +107,9 @@ function pushProject() {
     '# Ignore everything at root',
     '/*',
     '',
+    '# Unignore the projects directory so specific projects can be tracked',
+    '!/projects',
+    '',
     `# Track only this project`,
     `!/projects/${slug}`,
     `!/projects/${slug}/**`,
@@ -117,9 +120,12 @@ function pushProject() {
   // Create orphan branch (no parent — clean project history)
   const existingBranches = git(['branch']);
   if (existingBranches && existingBranches.includes(branch)) {
+    // Existing branch: clear stale files from previous project, then re-add
     git(['checkout', '-f', branch]);
+    git(['rm', '-rf', '--ignore-unmatch', '.']);
   } else {
-    // Orphan branch: starts with no history
+    // Orphan branch: starts with no history. Working tree already has
+    // the project files from the mounted volume — no need to rm/clean.
     const orphanResult = spawnSync('git', ['checkout', '--orphan', branch], {
       cwd: WORKDIR,
       encoding: 'utf-8',
@@ -130,9 +136,6 @@ function pushProject() {
       process.exit(1);
     }
   }
-
-  // Remove any stale files from previous project on this branch
-  git(['rm', '-rf', '--ignore-unmatch', '.']);
 
   // Stage the project files
   git(['add', '-A']);
