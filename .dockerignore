@@ -1,0 +1,31 @@
+# Secrets — never in the build context
+.env
+.env.*
+*.key
+*.pem
+secrets/
+
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Dependencies (installed inside the build)
+node_modules/
+vendor/
+__pycache__/
+
+# Build artifacts
+dist/
+build/
+
+# Workspace data (mounted at runtime)
+target/
+
+# Other markdown docs (but keep AGENTS.md and db.md for cline/app)
+*.md
+!AGENTS.md
+!db.md
+.dockerignore
+docker-compose*.yml
+.editorconfig
