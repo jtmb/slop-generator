@@ -20,7 +20,8 @@ COPY . .
 # =============================================================================
 FROM node:22-slim AS runtime
 
-# Install runtime dependencies and Cline CLI globally
+# Install runtime dependencies and Cline CLI globally.
+# git for branch-based project pushes, tini for PID 1 signal handling.
 RUN apt-get update && apt-get install -y ca-certificates tini git && \
     rm -rf /var/lib/apt/lists/* && \
     npm install -g cline@3.0.31 --no-cache
@@ -40,20 +41,23 @@ COPY --from=builder /app/lib/ ./lib/
 COPY --from=builder /app/config/ ./config/
 COPY --from=builder /app/AGENTS.md ./AGENTS.md
 COPY --from=builder /app/db.md ./db.md
-COPY --from=builder /app/apps ./apps
+COPY --from=builder /app/projects ./projects
 
 # Set environment variables (not in image layers - containers.instructions.md)
 ENV CLINE_PROVIDER=lmstudio
 ENV CLINE_API_BASE_URL=http://host.docker.internal:1234/v1
 ENV CLINE_MODEL=qwen/qwen3.5-9b
 ENV NODE_ENV=production
+# Accept self-signed cert from slop-api (internal Docker network)
+ENV NODE_TLS_REJECT_UNAUTHORIZED=0
+
+# No ports — builder is a worker, not a server
 
 # Health check (containers.instructions.md requirement)
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \
+HEALTHCHECK --interval=60s --timeout=5s --retries=3 --start-period=30s \
     CMD node -e "console.log('healthy')" || exit 1
 
 # Signal handling with tini (PID 1 problem solution - containers.instructions.md)
 ENTRYPOINT ["/usr/bin/tini", "--"]
 
-# Use exec form for proper signal forwarding (containers.instructions.md)
 CMD ["node", "scripts/agent-runner.js"]

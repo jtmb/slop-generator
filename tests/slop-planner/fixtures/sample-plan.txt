@@ -1,0 +1,16 @@
+Plan: Generate a new app idea for the idea database.
+
+## Research Phase
+1. Read AGENTS.md for project conventions and instructions
+2. Review existing ideas in db.md to avoid duplicates
+3. Research current market trends for underserved niches
+
+## Idea Generation
+1. Brainstorm 3-5 app concepts that solve real problems
+2. Select the most promising concept
+3. Write complete idea document with all required sections
+
+## Execution
+1. Create apps/{slug}.md with full idea details
+2. Update db.md with new entry
+3. Verify all sections are complete and well-written

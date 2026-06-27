@@ -1,21 +1,21 @@
 {
-  "name": "slop-planner",
+  "name": "slop-api",
   "version": "1.0.0",
-  "description": "App Idea Generator Agent with Cline CLI + LM Studio",
+  "description": "Slop Generator API — serves app ideas as structured JSON over HTTPS with JWT auth",
   "type": "module",
   "scripts": {
-    "start": "node scripts/agent-runner.js",
-    "dev": "node scripts/agent-runner.js --debug",
+    "start": "node scripts/api-server.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "axios": "^1.6.0",
-    "dotenv": "^16.3.0",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.2",
     "pino": "^9.5.0"
   },
   "devDependencies": {
+    "supertest": "^7.0.0",
     "vitest": "^3.1.1"
   }
 }

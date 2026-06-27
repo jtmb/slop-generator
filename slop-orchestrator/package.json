@@ -1,21 +1,21 @@
 {
-  "name": "slop-planner",
+  "name": "slop-orchestrator",
   "version": "1.0.0",
-  "description": "App Idea Generator Agent with Cline CLI + LM Studio",
+  "description": "Load controller — coordinates slop-planner and slop-builder turn-based batch execution",
   "type": "module",
   "scripts": {
-    "start": "node scripts/agent-runner.js",
-    "dev": "node scripts/agent-runner.js --debug",
+    "start": "node scripts/orchestrator.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "axios": "^1.6.0",
     "dotenv": "^16.3.0",
+    "express": "^4.21.0",
     "pino": "^9.5.0"
   },
   "devDependencies": {
+    "supertest": "^7.2.2",
     "vitest": "^3.1.1"
   }
 }

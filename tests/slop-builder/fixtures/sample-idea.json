@@ -1,0 +1,34 @@
+{
+  "id": 3,
+  "name": "SkillSwap Connect",
+  "filePath": "apps/skill-swap-connect.md",
+  "slug": "skill-swap-connect",
+  "category": "Education / Social Networking",
+  "status": "Idea Generated",
+  "dateAdded": "2026-06-27",
+  "details": {
+    "name": "SkillSwap Connect",
+    "slug": "skill-swap-connect",
+    "overview": "A peer-to-peer skill exchange platform where users trade expertise in real-time video sessions.",
+    "problemSolved": "Professional learning is expensive and inaccessible. People have skills others need but no easy way to exchange them.",
+    "targetAudience": ["Professionals aged 22-50", "Students looking to learn practical skills", "Freelancers expanding their service offerings"],
+    "keyFeatures": [
+      { "title": "Skill Matching", "description": "AI-powered matching based on what you can teach and what you want to learn." },
+      { "title": "Live Sessions", "description": "Integrated video calls with shared whiteboard and screen sharing." },
+      { "title": "Credit System", "description": "Earn credits by teaching, spend credits to learn — no money involved." }
+    ],
+    "monetization": ["Premium: $9.99/month for unlimited sessions and priority matching", "Enterprise: B2B for company internal knowledge sharing"],
+    "techStack": {
+      "frontend": "Next.js 14 with Tailwind CSS",
+      "backend": "Node.js with Express",
+      "database": "PostgreSQL + Redis"
+    },
+    "progress": {
+      "idea_generated": true,
+      "plan_created": false,
+      "development_started": false,
+      "mvp_complete": false,
+      "launched": false
+    }
+  }
+}

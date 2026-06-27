@@ -1,0 +1,35 @@
+{
+  "name": "EcoTrack",
+  "slug": "eco-track",
+  "overview": "EcoTrack is a comprehensive carbon footprint tracking application designed to help individuals and families monitor, reduce, and offset their environmental impact through everyday choices.",
+  "problemSolved": "Many people want to live more sustainably but lack visibility into how their daily activities contribute to their carbon footprint, making it difficult to identify meaningful ways to reduce their impact.",
+  "targetAudience": [
+    "Environmentally conscious individuals aged 18-45",
+    "Families looking to reduce their household impact",
+    "Corporate sustainability teams"
+  ],
+  "keyFeatures": [
+    { "title": "Activity Logging", "description": "Easy-to-use interface for logging daily activities like transportation, meals, and energy use." },
+    { "title": "Personal Dashboard", "description": "Visual charts and graphs showing carbon footprint trends over time with personalized reduction tips." },
+    { "title": "Community Challenges", "description": "Group-based sustainability challenges with leaderboards to foster friendly competition." },
+    { "title": "Carbon Offset Integration", "description": "Direct integration with verified carbon offset programs for one-click offset purchases." }
+  ],
+  "monetization": [
+    "Freemium Model: Free basic tracking; Premium ($4.99/month) for advanced analytics, API access, and custom challenges.",
+    "Corporate Partnerships: B2B SaaS for companies wanting employee sustainability programs.",
+    "Affiliate Revenue: Partnerships with eco-friendly product companies for recommended products."
+  ],
+  "techStack": {
+    "frontend": "React Native (cross-platform mobile app) or Flutter",
+    "backend": "Node.js with Express or Python FastAPI",
+    "database": "PostgreSQL (relational data) + Redis (caching/leaderboards)"
+  },
+  "implementationPlan": "See `apps/eco-track-plan.md` for detailed implementation roadmap.",
+  "progress": {
+    "idea_generated": true,
+    "plan_created": false,
+    "development_started": false,
+    "mvp_complete": false,
+    "launched": false
+  }
+}

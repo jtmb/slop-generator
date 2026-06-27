@@ -1,24 +1,107 @@
-# AGENTS.md — Mandatory Pre-Read
+# Slop Generator — Monorepo
 
-Before implementing, writing, editing, or deleting any code in this repository, you MUST:
+This is a monorepo containing autonomous AI agents that generate software project ideas and implementations. Three services communicate over a Docker bridge network:
 
-1. Read this file for project conventions, architecture, common patterns, and documentation rules
-2. Follow all rules and conventions documented here
-3. After making changes, re-read relevant sections and update anything that is now wrong
+- **slop-planner** — generates app concepts, pushes them to slop-api
+- **slop-api** — standalone REST API with JWT auth, serves and accepts ideas
+- **slop-builder** — consumes random ideas, builds full production apps, pushes to git
 
-**Do not skip this step.** AGENTS.md is the source of truth for how this codebase works. Treat it as a mandatory pre-read before any code work.
+## Repository Structure
 
-## Customizing for Your Project
+```
+.
+├── slop-planner/       # App Idea Generator — autonomous agent that generates app concepts
+│   ├── AGENTS.md       # Planner-specific agent instructions
+│   ├── Dockerfile      # Containerized Cline CLI + LM Studio
+│   ├── apps/           # Generated app idea files
+│   ├── db.md           # Idea database (tracks all generated ideas)
+│   ├── scripts/        # Agent runner and utility scripts
+│   └── config/         # Environment and settings
+│
+├── slop-api/           # REST API microservice — serves/accepts ideas over HTTPS
+│   ├── Dockerfile      # Express + JWT, self-signed TLS via openssl
+│   ├── data/           # API-owned data store (db.md + apps/)
+│   ├── scripts/        # api-server.js
+│   └── config/         # API-specific env vars
+│
+├── slop-builder/       # App Builder — builds full production apps from random ideas
+│   ├── AGENTS.md       # Builder-specific agent instructions
+│   ├── Dockerfile      # Containerized Cline CLI + LM Studio
+│   ├── projects/       # Built project directories (per slug)
+│   ├── db.md           # Builder's own project tracker
+│   ├── scripts/        # agent-runner.js, git-sync.js
+│   └── config/         # Environment and settings
+│
+├── .github/            # Shared GitHub Agents, Prompts, Workflows
+│   ├── agents/         # VS Code agent definitions (janitor, prompt-engineer, etc.)
+│   ├── instructions/   # Framework-specific instruction sets
+│   ├── prompts/        # Reusable prompt templates
+│   └── workflows/      # CI pipeline
+│
+├── .clinerules/        # Framework overlay rules
+├── docker-compose.yml  # Root compose — all three services + slop-net bridge
+├── .env                # Root env vars (API_KEY shared across services)
+├── AGENTS.md           # This file — monorepo root guide
+├── docs/               # Project documentation
+└── README.md           # Project overview and quick start
+```
 
-This file contains **generic core rules** that apply to all projects regardless of language or framework. Framework-specific conventions (build commands, directory layouts, language idioms) live in `.github/instructions/{framework}.instructions.md` and are loaded automatically when editing matching files.
+## Quick Start
 
-To customize:
-- **Add a framework rule**: Create `.github/instructions/{name}.instructions.md` with an `applyTo` frontmatter field
-- **Add a project-specific rule**: Use `.github/instructions/{name}.instructions.md` scoped to your source directories
-- **Add a task template**: Create `.github/prompts/{name}.prompt.md` (invocable via `/` in VS Code chat)
-- **Enforce deterministically**: Add `.github/hooks/{name}.json` for lifecycle-based guardrails
+```bash
+# Set your API key (shared between planner and builder for auth)
+echo "API_KEY=your-secret-key" > .env
 
-See `USAGE.md` for the full decision tree and step-by-step guides.
+# Set LM Studio endpoint (default: 192.168.0.13:1234)
+# Override in .env if needed: CLINE_API_BASE_URL=http://192.168.0.13:1234/v1
+
+# Build and start all three services
+docker compose up -d --build
+
+# Check status
+docker compose ps
+```
+
+### Service Responsibilities
+
+| Service | Port | Auth | Package Dependencies |
+|---------|------|------|---------------------|
+| slop-planner | none | consumer | axios, dotenv |
+| slop-api | 3443 (HTTPS) | JWT (HS256) | express, jsonwebtoken |
+| slop-builder | none | consumer | axios, dotenv |
+
+### Data Flow
+
+```
+slop-planner ──POST /api/v1/ideas──▶ slop-api
+                                        │
+slop-builder ◀──GET /api/v1/ideas/random──┘
+       │
+       ▼
+  builds app → tests → git push (build/{slug} branch)
+```
+
+### API Endpoints (slop-api)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | /health | none | Health check |
+| POST | /api/v1/auth/token | api_key | Obtain JWT |
+| GET | /api/v1/ideas | JWT | List all ideas |
+| GET | /api/v1/ideas/random | JWT | Random idea |
+| GET | /api/v1/ideas/:slug | JWT | Single idea |
+| POST | /api/v1/ideas | JWT | Ingest new idea |
+
+## Development Conventions
+
+- **Container builds**: Run `docker compose build` from repo root
+- **Config**: Environment-specific values in each service's `config/.env`
+- **No shared volumes**: Each service owns its data (`slop-planner/apps/`, `slop-api/data/`, `slop-builder/projects/`)
+- **Only slop-api carries heavy packages** (express, jsonwebtoken). Planner and builder are lightweight.
+- **Generated ideas**: Stored as `.md` files in `slop-planner/apps/` and `slop-api/data/apps/`
+- **Idea databases**: Each service has its own independent `db.md`
+
+See `.github/instructions/` for framework-specific rules that apply automatically.
 
 
 # Code Comments — Mandatory
@@ -39,6 +122,7 @@ Every source change must update the corresponding docs in `docs/` at the repo ro
 1. Check which docs in `docs/` at the repo root cover the behavior you changed
 2. Re-read those docs
 3. Update anything that's now wrong. If no doc covers it, create one.
+4. **Add or update Mermaid diagrams** — every architectural, data-flow, lifecycle, or process concept MUST have a visual diagram. See `.github/instructions/mermaid-diagrams.instructions.md` for the full ruleset.
 
 **Do not defer.** Apply doc updates in the same turn as the code change. Treat docs as part of the feature.
 

@@ -1,52 +1,203 @@
 services:
-  slop-generator:
+  # ===========================================================================
+  # slop-planner — Generates app ideas via Cline CLI + LM Studio.
+  # Pushes new ideas to slop-api after each iteration.
+  # ===========================================================================
+  slop-planner:
     build:
-      context: .
+      context: ./slop-planner
       dockerfile: Dockerfile
       target: runtime
-    container_name: slop-generator
+    container_name: slop-planner
     restart: unless-stopped
-    
-    # # Resource limits (containers.instructions.md)
-    # deploy:
-    #   resources:
-    #     limits:
-    #       cpus: '4.0'
-    #       memory: 1G
-    #     reservations:
-    #       cpus: '1.0'
-    #       memory: 2G
-    
-    # Environment variables from .env file (containers.instructions.md)
+
+    depends_on:
+      slop-orchestrator:
+        condition: service_healthy
+
     env_file:
-      - config/.env
-    
-    # Explicit environment variables for Cline CLI configuration
+      - ./slop-planner/config/.env
+
     environment:
+      # Provider and model — "lmstudio" for local inference via LM Studio API
       - CLINE_PROVIDER=${CLINE_PROVIDER:-lmstudio}
       - CLINE_API_BASE_URL=${CLINE_API_BASE_URL:-http://192.168.0.13:1234/v1}
       - CLINE_MODEL=${CLINE_MODEL:-qwen/qwen3.5-9b}
-    
-    # Volume mounts for workspace persistence
+
+      # Git sync — pushes after each completed iteration
+      - GIT_REPO_URL=${GIT_REPO_URL:-}
+      - GIT_BRANCH=${GIT_BRANCH:-main}
+      - GIT_USER_NAME=${GIT_USER_NAME:-Slop Generator}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-slop-generator@localhost}
+      - GIT_SYNC_DB=${GIT_SYNC_DB:-false}
+
+      # API key for pushing ideas to slop-api
+      - API_KEY=${API_KEY:-}
+
+      # slop-orchestrator coordination
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-http://slop-orchestrator:3444}
+
+      # GitHub token for git push auth (PAT or GITHUB_TOKEN)
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+
     volumes:
-      - ./apps:/app/apps
-      - ./db.md:/app/db.md
-      - ./config:/app/config:ro
-    
-    # Health check in compose (requires HEALTHCHECK in Dockerfile)
-    healthcheck:
-      test: ["CMD", "node", "-e", "console.log('healthy')"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    
-    # Logging configuration (containers.instructions.md)
+      - ./slop-planner/apps:/app/apps
+      - ./slop-planner/db.md:/app/db.md
+      - ./slop-planner/config:/app/config:ro
+
+    networks:
+      - slop-net
+
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-    
-    # Stop grace period for graceful shutdown
+
     stop_grace_period: 30s
+
+  # ===========================================================================
+  # slop-api — Standalone microservice with its own data store.
+  # Serves app ideas as structured JSON over HTTPS with JWT auth.
+  # ===========================================================================
+  slop-api:
+    build:
+      context: ./slop-api
+      dockerfile: Dockerfile
+    container_name: slop-api
+    restart: unless-stopped
+
+    env_file:
+      - ./slop-api/config/.env
+
+    environment:
+      - API_PORT=3443
+      # API_KEY and JWT_SECRET from root .env (shared across services)
+      - API_KEY=${API_KEY:-}
+      - JWT_SECRET=${JWT_SECRET:-}
+      - JWT_EXPIRY=${JWT_EXPIRY:-1h}
+
+    volumes:
+      # API owns its own data — no shared volumes with other services
+      - ./slop-api/data:/app/data
+
+    ports:
+      - "3443:3443"
+
+    networks:
+      - slop-net
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('https').request({host:'localhost',port:3443,path:'/health',rejectUnauthorized:false},r=>{process.exit(r.statusCode===200?0:1)}).end()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    stop_grace_period: 10s
+
+  # ===========================================================================
+  # slop-orchestrator — Coordinates turn-based batch execution between
+  # slop-planner and slop-builder. Planner generates BATCH_SIZE ideas,
+  # then builder builds BATCH_SIZE projects, alternating.
+  # ===========================================================================
+  slop-orchestrator:
+    build:
+      context: ./slop-orchestrator
+      dockerfile: Dockerfile
+    container_name: slop-orchestrator
+    restart: unless-stopped
+
+    env_file:
+      - ./slop-orchestrator/config/.env
+
+    environment:
+      - ORCHESTRATOR_PORT=3444
+      - BATCH_SIZE=${BATCH_SIZE:-6}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+
+    networks:
+      - slop-net
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3444/health',r=>{process.exit(r.statusCode===200?0:1)}).end()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    stop_grace_period: 10s
+
+  # ===========================================================================
+  # slop-builder — Consumes random ideas from slop-api, builds full production
+  # apps, tests them, and pushes to per-project git branches.
+  # ===========================================================================
+  slop-builder:
+    build:
+      context: ./slop-builder
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: slop-builder
+    restart: unless-stopped
+
+    depends_on:
+      slop-api:
+        condition: service_healthy
+      slop-orchestrator:
+        condition: service_healthy
+
+    env_file:
+      - ./slop-builder/config/.env
+
+    environment:
+      # slop-api endpoint (internal Docker network)
+      - API_BASE_URL=${API_BASE_URL:-https://slop-api:3443}
+      - API_KEY=${API_KEY:-}
+
+      # Cline CLI configuration
+      - CLINE_PROVIDER=${CLINE_PROVIDER:-lmstudio}
+      - CLINE_API_BASE_URL=${CLINE_API_BASE_URL:-http://192.168.0.13:1234/v1}
+      - CLINE_MODEL=${CLINE_MODEL:-qwen/qwen3.5-9b}
+
+      # Git push configuration
+      - GIT_REPO_URL=${GIT_REPO_URL:-}
+      - GIT_USER_NAME=${GIT_USER_NAME:-Slop Builder}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-slop-generator@localhost}
+
+      # slop-orchestrator coordination
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-http://slop-orchestrator:3444}
+
+      # GitHub token for git push auth (PAT or GITHUB_TOKEN)
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+
+    volumes:
+      - ./slop-builder/projects:/app/projects
+      - ./slop-builder/db.md:/app/db.md
+      - ./slop-builder/config:/app/config:ro
+
+    networks:
+      - slop-net
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    stop_grace_period: 30s
+
+networks:
+  slop-net:
+    driver: bridge

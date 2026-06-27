@@ -1,7 +1,7 @@
 {
-  "name": "slop-planner",
+  "name": "slop-builder",
   "version": "1.0.0",
-  "description": "App Idea Generator Agent with Cline CLI + LM Studio",
+  "description": "Autonomous App Builder Agent — consumes ideas from slop-api, builds production apps",
   "type": "module",
   "scripts": {
     "start": "node scripts/agent-runner.js",
