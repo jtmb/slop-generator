@@ -88,10 +88,10 @@ Both use Cline CLI for AI-driven agent workflows:
 ## slop-orchestrator Stack
 
 - **Server**: Express 4.21 on Node.js 22
-- **State**: In-memory JavaScript object — resets on restart
-- **Port**: 3444 (HTTP, internal Docker network only)
+- **State**: In-memory with JSON file persistence (`/tmp/orchestrator-state.json`) — survives restarts
+- **Port**: 3444 (HTTP, internal Docker network — not exposed to host)
 - **Endpoints**: /health, /state, /check-in, /progress
-- **Fail-open design**: Workers proceed uncoordinated if orchestrator is unreachable
+- **Resilience**: Workers retry with exponential backoff if unreachable — up to 10 retries before error
 - **Container**: Single-stage build, non-root user (uid 1000), HEALTHCHECK via /health
 
 ## Package Dependency Summary
@@ -100,7 +100,7 @@ Both use Cline CLI for AI-driven agent workflows:
 slop-planner/package.json:       axios, dotenv, pino           (lightweight)
 slop-api/package.json:           express, jsonwebtoken, pino   (auth + server + logging)
 slop-builder/package.json:       axios, dotenv, pino           (lightweight)
-slop-orchestrator/package.json:  express, dotenv, pino         (server + logging)
+slop-orchestrator/package.json:  express, axios, dotenv, pino   (server + http client + logging)
 ```
 
 ## Testing Stack

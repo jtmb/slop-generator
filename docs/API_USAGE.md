@@ -15,7 +15,7 @@ The API needs one shared secret across all containers:
 API_KEY=your-shared-secret-here
 ```
 
-All three services get this via `docker-compose.yml` `environment:` → `API_KEY=${API_KEY:-}`. The API uses it to validate token requests; planner and builder use it to authenticate.
+All services get this via `docker-compose.yml` `environment:` → `API_KEY=${API_KEY:-}`. The API uses it to validate token requests; planner and builder use it to authenticate; the orchestrator uses `ORCHESTRATOR_PORT` and `BATCH_SIZE`.
 
 ---
 

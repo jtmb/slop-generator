@@ -34,9 +34,8 @@ graph TB
 - **Role**: Coordinates turn-based batch execution between planner and builder
 - **Tech**: Express 4.21, Pino 9.5, Node.js 22
 - **Internal-only**: No host port exposure — HTTP on 3444 within slop-net
-- **State**: In-memory — `{ turn, plannerProgress, builderProgress, batchSize }`
+- **State**: In-memory with JSON file persistence (`/tmp/orchestrator-state.json`) — survives container restarts
 - **Endpoints**: /health, /state, /check-in, /progress
-- **Fail-open**: Workers proceed uncoordinated if orchestrator is unreachable
 
 ### slop-planner — App Idea Generator (Worker)
 - **Role**: Autonomous agent that generates unique app concepts
@@ -136,7 +135,7 @@ graph LR
     A -->|/health, /auth| U[Users ✅]
 ```
 
-Neither slop-api nor slop-builder depends on slop-planner at runtime. The planner is purely an idea producer — once ideas are in the database, the builder reads them through the API without any planner involvement. The orchestrator is fail-open: if it's unreachable, planners and builders proceed uncoordinated rather than deadlocking.
+Neither slop-api nor slop-builder depends on slop-planner at runtime. The planner is purely an idea producer — once ideas are in the database, the builder reads them through the API without any planner involvement. If the orchestrator is unreachable, workers retry with exponential backoff (5s-30s) up to 10 times before throwing an error — preventing uncoordinated LLM usage.
 
 ## Key Design Decisions
 

@@ -87,15 +87,21 @@ GIT_REPO_URL=https://jtmb:ghp_xxxxxxxxxxxx@github.com/jtmb/app-ideas.git
 ### .gitignore Shape (in-repo, generated at runtime)
 
 ```
-# Ignore everything by default
-*
+# Ignore everything at root by default
+/*
 
 # Except generated app ideas
-!/apps/
+!/apps
+!/apps/**
 
 # Optionally track the idea database
 !/db.md
 ```
+
+**Why `/*` not `*`**: A bare `*` matches basenames in ALL directories recursively — it would
+ignore files inside `apps/` even with `!/apps/` in the gitignore. Using `/*` limits the
+ignore scope to the repo root, so `!/apps` and `!/apps/**` can un-ignore the directory
+and its contents correctly.
 
 ---
 
@@ -131,7 +137,9 @@ Three required CLI args:
 1. **Prep repo** — `git init` if needed, set `user.name`/`user.email`
 2. **Create/switch to orphan branch** — `git checkout --orphan build/{slug}`
 3. **If branch exists** — switch to it, wipe all tracked files (`git rm -rf .`)
-4. **.gitignore** — writes one that ignores everything except `!/projects/{slug}/`
+   (skipped for new orphan branches — working tree already has project files)
+4. **.gitignore** — writes one that ignores everything at root, then un-ignores
+   `projects/` directory and the specific project subdirectory
 5. **Stage + commit** — `git add -A && git commit -m "..."` with the project files
 6. **Force push** — `git push -f origin build/{slug}`
 
@@ -163,14 +171,22 @@ Each `build/{slug}` branch has exactly one commit: the completed project. No mer
 ### .gitignore Shape (in-repo, generated per push)
 
 ```
-# Ignore everything
-*
+# Ignore everything at root
+/*
+
+# Unignore the projects directory so specific projects can be tracked
+!/projects
 
 # Track only this project
-!/projects/eco-track/
+!/projects/eco-track
+!/projects/eco-track/**
 ```
 
-Each push rewrites `.gitignore` to track exactly one project. The next push for a different slug rewrites it again.
+**Why three negation patterns**: `/*` ignores the `projects/` directory at the root.
+Git won't traverse into ignored directories to evaluate negation patterns — so
+`!/projects` must appear before `!/projects/{slug}` to un-ignore the parent.
+Each push rewrites `.gitignore` to track exactly one project. The next push for
+a different slug rewrites it again.
 
 ---
 

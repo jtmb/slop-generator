@@ -1,10 +1,11 @@
 # Slop Generator — Monorepo
 
-This is a monorepo containing autonomous AI agents that generate software project ideas and implementations. Three services communicate over a Docker bridge network:
+This is a monorepo containing autonomous AI agents that generate software project ideas and implementations. Four services communicate over a Docker bridge network:
 
 - **slop-planner** — generates app concepts, pushes them to slop-api
 - **slop-api** — standalone REST API with JWT auth, serves and accepts ideas
 - **slop-builder** — consumes random ideas, builds full production apps, pushes to git
+- **slop-orchestrator** — turn-based load controller; prevents planner and builder from running LM Studio concurrently
 
 ## Repository Structure
 
@@ -30,6 +31,11 @@ This is a monorepo containing autonomous AI agents that generate software projec
 │   ├── projects/       # Built project directories (per slug)
 │   ├── db.md           # Builder's own project tracker
 │   ├── scripts/        # agent-runner.js, git-sync.js
+│   └── config/         # Environment and settings
+│
+├── slop-orchestrator/  # Load controller — coordinates turn-based batch execution
+│   ├── Dockerfile      # Express 4.21 + Pino 9.5
+│   ├── scripts/        # orchestrator.js
 │   └── config/         # Environment and settings
 │
 ├── .github/            # Shared GitHub Agents, Prompts, Workflows
@@ -69,6 +75,7 @@ docker compose ps
 | slop-planner | none | consumer | axios, dotenv |
 | slop-api | 3443 (HTTPS) | JWT (HS256) | express, jsonwebtoken |
 | slop-builder | none | consumer | axios, dotenv |
+| slop-orchestrator | 3444 (HTTP, internal) | none | express, axios, dotenv |
 
 ### Data Flow
 
@@ -79,6 +86,8 @@ slop-builder ◀──GET /api/v1/ideas/random──┘
        │
        ▼
   builds app → tests → git push (build/{slug} branch)
+
+slop-orchestrator ◀─▶ /check-in, /progress (planner + builder)
 ```
 
 ### API Endpoints (slop-api)
@@ -97,7 +106,7 @@ slop-builder ◀──GET /api/v1/ideas/random──┘
 - **Container builds**: Run `docker compose build` from repo root
 - **Config**: Environment-specific values in each service's `config/.env`
 - **No shared volumes**: Each service owns its data (`slop-planner/apps/`, `slop-api/data/`, `slop-builder/projects/`)
-- **Only slop-api carries heavy packages** (express, jsonwebtoken). Planner and builder are lightweight.
+- **Only slop-api and slop-orchestrator carry heavy packages** (express). Planner and builder are lightweight.
 - **Generated ideas**: Stored as `.md` files in `slop-planner/apps/` and `slop-api/data/apps/`
 - **Idea databases**: Each service has its own independent `db.md`
 

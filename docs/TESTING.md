@@ -12,21 +12,23 @@ graph TB
         RT[routes.test.js<br/>18 tests<br/>supertest]
     end
 
-    subgraph slop-planner[slop-planner Tests — 20 tests]
+    subgraph slop-planner[slop-planner Tests — 34 tests]
         PP[planner-prompt.test.js<br/>8 tests]
         PR[planner-runner.test.js<br/>7 tests]
         PG[planner-gitsync.test.js<br/>5 tests]
+        PRE[planner-recovery.test.js<br/>14 tests]
     end
 
-    subgraph slop-builder[slop-builder Tests — 29 tests]
+    subgraph slop-builder[slop-builder Tests — 42 tests]
         BD[builder-database.test.js<br/>9 tests]
         BT[builder-tests.test.js<br/>7 tests]
         BP[builder-prompt.test.js<br/>12 tests]
         BG[builder-gitsync.test.js<br/>1 test]
+        BRE[builder-recovery.test.js<br/>12 tests]
     end
 
-    subgraph slop-orchestrator[slop-orchestrator Tests — 14 tests]
-        OT[orchestrator.test.js<br/>14 tests<br/>built-in http]
+    subgraph slop-orchestrator[slop-orchestrator Tests — 17 tests]
+        OT[orchestrator.test.js<br/>17 tests<br/>built-in http]
     end
 
     PA -->|mock fs| FS[Node fs]
@@ -95,7 +97,7 @@ tests/
     └── orchestrator.test.js      # 17 tests — state machine, turn flips, error cases, state persistence
 ```
 
-**Total: 134 tests across 14 files**
+**Total: 135 tests across 13 files**
 
 ## Test Categories
 

@@ -310,11 +310,11 @@ graph TB
         E4["Tests fail<br/>(all retries exhausted)"]
         E5["Git push fails<br/>(network/auth)"]
         E6["Mid-phase crash<br/>(container restart)"]
-        E7["Orchestrator crash<br/>(state loss)"]
+        E7["Orchestrator crash/restart<br/>(state recovery)"]
     end
 
     E1 --> R1["Agent exits with code 1<br/>Docker restart: unless-stopped"]
-    E2 --> R2["Fail-open: proceed without<br/>coordination. Both workers run."]
+    E2 --> R2["Retry with exponential backoff<br/>starting at 5s, max 30s.<br/>After 10 failures: throw error."]
     E3 --> R3["Reconcile existing dir<br/>Resume build or skip if done."]
     E4 --> R4["updateDatabase(Tests Failed)<br/>isAlreadyBuilt matches → won't re-fetch."]
     E5 --> R5["updateDatabase(Built push failed)<br/>Non-fatal — continue loop."]
