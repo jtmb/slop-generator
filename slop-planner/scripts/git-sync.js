@@ -71,13 +71,14 @@ function ensureGitRepo() {
   git(['config', 'user.name', USER_NAME]);
   git(['config', 'user.email', USER_EMAIL]);
 
-  // .gitignore: ignore everything except apps/ (and optionally db.md)
+  // .gitignore: ignore everything at the top level by default
   const gitignoreLines = [
-    '# Ignore everything by default',
-    '*',
+    '# Ignore everything at root by default',
+    '/*',
     '',
     '# Except generated app ideas',
-    '!/apps/',
+    '!/apps',
+    '!/apps/**',
   ];
   if (SYNC_DB) {
     gitignoreLines.push('', '# Optionally track the idea database', '!/db.md');

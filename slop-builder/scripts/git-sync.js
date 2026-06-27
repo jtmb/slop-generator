@@ -104,11 +104,12 @@ function pushProject() {
 
   // .gitignore: only track this specific project
   const gitignoreContent = [
-    '# Ignore everything',
-    '*',
+    '# Ignore everything at root',
+    '/*',
     '',
     `# Track only this project`,
-    `!/projects/${slug}/`,
+    `!/projects/${slug}`,
+    `!/projects/${slug}/**`,
     '',
   ].join('\n');
   writeFileSync(`${WORKDIR}/.gitignore`, gitignoreContent);

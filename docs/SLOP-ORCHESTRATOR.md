@@ -126,9 +126,27 @@ await reportProgress(); // Logs when batch completes
 
 Same pattern, `role: 'builder'`.
 
-### Fail-Open Behavior
+### Retry & Resilience
 
-If the orchestrator is unreachable (network error, timeout), both `checkCanRun()` and `reportProgress()` log a warning and proceed anyway. This prevents the orchestrator from becoming a single point of failure — agents fall back to uncoordinated execution if coordination is unavailable.
+`checkCanRun()` polls the orchestrator with retry + backoff:
+- When the orchestrator says `can_run: false`, sleeps 30s and retries
+- When the orchestrator is unreachable (network error, timeout), retries with
+  exponential backoff starting at 5s, capping at 30s
+- After `MAX_ORCHESTRATOR_RETRIES` (10) consecutive failures, throws an error
+  to prevent the agent from running without coordination
+- This prevents both containers from firing the LLM simultaneously
+
+`reportProgress()` logs a warning on failure but does NOT fail the parent
+iteration — progress reporting is advisory; the next `/check-in` will
+re-sync state.
+
+### Recovery & Reconciliation
+
+Both planner and builder invoke `checkCanRun()` before every `runCline()`
+call during crash recovery to ensure they don't bypass the orchestrator:
+- `recoverPlannerState()` calls `await checkCanRun()` before each re-run phase
+- `reconcileProjectsDir()` (builder) calls `await checkCanRun()` before each
+  build phase in the recovery loop
 
 ### State Persistence
 
