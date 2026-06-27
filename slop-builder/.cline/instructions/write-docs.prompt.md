@@ -1,7 +1,6 @@
 ---
 description: "Write high-quality documentation: READMEs, API docs, ADRs, and architecture decision records. Use after building features or when docs are stale."
 argument-hint: "What to document (readme, api, adr, architecture)"
-agent: "Explore"
 ---
 
 # Write Project Documentation

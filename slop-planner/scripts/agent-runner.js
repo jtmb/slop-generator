@@ -29,11 +29,11 @@ const MODEL = process.env.CLINE_MODEL || 'qwen/qwen3.5-9b';
 
 // slop-orchestrator coordination
 const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || 'http://slop-orchestrator:3444';
-const httpAgent = new http.Agent({ keepAlive: true });
 
 const orch = axios.create({
   baseURL: ORCHESTRATOR_URL,
-  httpAgent,
+  // keepAlive: false to avoid EPIPE on reused sockets
+  httpAgent: new http.Agent({ keepAlive: false }),
   timeout: 10000,
 });
 
@@ -138,20 +138,31 @@ IMPORTANT: You MUST use your file system tools to create and update files. Do no
 
 /**
  * Poll the orchestrator until it's our turn to run.
- * Fails open — if the orchestrator is unreachable, proceed anyway.
+ * Does NOT fail open — if the orchestrator is unreachable,
+ * retries with backoff until it responds. Never proceeds without coordination.
  */
+const MAX_ORCHESTRATOR_RETRIES = 10;
+
 async function checkCanRun() {
+  let retries = 0;
   while (true) {
     try {
       const { data } = await orch.post('/check-in', { role: 'planner' });
+      retries = 0; // Reset on success
       if (data.can_run) {
         logger.info({ turn: data.turn, progress: data.progress }, 'Orchestrator says go');
         return;
       }
       logger.info({ turn: data.turn, progress: data.progress }, 'Orchestrator says wait — sleeping 30s');
     } catch (err) {
-      logger.warn({ err, orchestratorUrl: ORCHESTRATOR_URL }, 'Orchestrator unreachable — proceeding anyway');
-      return;
+      retries++;
+      if (retries > MAX_ORCHESTRATOR_RETRIES) {
+        throw new Error(`Orchestrator unreachable after ${MAX_ORCHESTRATOR_RETRIES} retries — giving up`);
+      }
+      const backoff = Math.min(retries * 5000, 30000);
+      logger.warn({ err, retries, backoffMs: backoff, orchestratorUrl: ORCHESTRATOR_URL }, 'Orchestrator unreachable — retrying');
+      await new Promise(r => setTimeout(r, backoff));
+      continue;
     }
     await new Promise(r => setTimeout(r, 30000));
   }
@@ -176,11 +187,13 @@ async function reportProgress() {
  * Recover from a previous crash/restart by reading .agent-state.json.
  *
  * If the agent was mid-iteration, completes the interrupted work.
+ * Respects the orchestrator — waits for planner's turn before each cline call.
  * Returns the iteration number to resume from (0 if fresh start).
  *
  * @param {string} [statePath] - Override state file path (for testing)
+ * @param {Function} [checkCanRunFn] - Override orchestrator check function (for testing)
  */
-function recoverPlannerState(statePath) {
+async function recoverPlannerState(statePath, checkCanRunFn = checkCanRun) {
   const sp = statePath || undefined;
   const state = loadState(sp);
 
@@ -207,6 +220,7 @@ function recoverPlannerState(statePath) {
       // Re-run planning if interrupted during planning
       if (state.phase === 'planning') {
         logger.info({ phase: 'planning', iteration: iter }, 'Recovery: re-running planning phase');
+        await checkCanRunFn();
         runCline(buildPlanPrompt());
         saveState(sp, { iteration: iter, phase: 'execution', currentSlug: null });
       }
@@ -214,6 +228,7 @@ function recoverPlannerState(statePath) {
       // Re-run execution if interrupted during execution
       if (state.phase === 'planning' || state.phase === 'execution') {
         logger.info({ phase: 'execution', iteration: iter }, 'Recovery: re-running execution phase');
+        await checkCanRunFn();
         runCline(buildAgentPrompt());
         saveState(sp, { iteration: iter, phase: 'git-sync', currentSlug: null });
       }
@@ -252,7 +267,7 @@ async function main() {
   configureProvider();
 
   // Recover from crash/restart — get the iteration to start from
-  const recoveredIteration = recoverPlannerState();
+  const recoveredIteration = await recoverPlannerState();
   let iteration = recoveredIteration;
 
   // If recovered from a mid-iteration crash, report progress for that iteration

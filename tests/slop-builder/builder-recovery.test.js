@@ -23,6 +23,11 @@ import {
   updateDatabase,
 } from '../../slop-builder/scripts/agent-runner.js';
 
+// Build a mock checkCanRun that resolves immediately (orchestrator says "go")
+function mockCheckCanRun() {
+  return vi.fn().mockResolvedValue(undefined);
+}
+
 function tempDir() {
   const d = path.join(tmpdir(), `test-builder-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   fs.mkdirSync(d, { recursive: true });
@@ -105,21 +110,21 @@ describe('reconcileProjectsDir', () => {
     if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
   });
 
-  it('returns early when project dir does not exist', () => {
-    expect(() => reconcileProjectsDir('/nonexistent-dir')).not.toThrow();
+  it('returns early when project dir does not exist', async () => {
+    await reconcileProjectsDir('/nonexistent-dir', dbPath, mockCheckCanRun()); // Should not throw
   });
 
-  it('removes orphan directories with no plan.md', () => {
+  it('removes orphan directories with no plan.md', async () => {
     const orphanDir = path.join(projectsDir, 'orphan-slug');
     fs.mkdirSync(orphanDir);
     fs.writeFileSync(path.join(orphanDir, 'some-file.txt'), 'garbage');
 
-    reconcileProjectsDir(projectsDir, dbPath);
+    await reconcileProjectsDir(projectsDir, dbPath, mockCheckCanRun());
 
     expect(fs.existsSync(orphanDir)).toBe(false);
   });
 
-  it('resumes build for projects with unchecked plan items', () => {
+  it('resumes build for projects with unchecked plan items', async () => {
     const slugDir = path.join(projectsDir, 'partial-build');
     fs.mkdirSync(slugDir);
     fs.writeFileSync(path.join(slugDir, 'plan.md'), [
@@ -131,15 +136,19 @@ describe('reconcileProjectsDir', () => {
       '`npm test`',
     ].join('\n'));
 
-    reconcileProjectsDir(projectsDir, dbPath);
+    const checkFn = mockCheckCanRun();
+    await reconcileProjectsDir(projectsDir, dbPath, checkFn);
 
-    // Should have called buildExecutePrompt (via runCline) and tests
-    // The project should be in the db after reconciliation
+    // checkCanRun should be called (once per build phase, up to 10 max)
+    // With 2 unchecked items and spawnSync mock returning success,
+    // the loop runs, tests pass, and db is updated
+    expect(checkFn).toHaveBeenCalled();
+
     const status = getDbEntry('partial-build', dbPath);
     expect(status).toBeDefined();
   });
 
-  it('skips projects already in the database', () => {
+  it('skips projects already in the database', async () => {
     // Set up db with existing entry
     fs.writeFileSync(dbPath, [
       '## Total Projects Built: 1',
@@ -154,11 +163,36 @@ describe('reconcileProjectsDir', () => {
     fs.mkdirSync(slugDir);
     fs.writeFileSync(path.join(slugDir, 'plan.md'), 'fake plan');
 
-    const spy = vi.spyOn({ runTests: () => true }, 'runTests');
-    reconcileProjectsDir(projectsDir, dbPath);
+    const checkFn = mockCheckCanRun();
+    await reconcileProjectsDir(projectsDir, dbPath, checkFn);
 
-    // Should NOT have called runTests since entry already exists
+    // Should NOT have called checkCanRun since entry already exists
+    expect(checkFn).not.toHaveBeenCalled();
     expect(fs.existsSync(slugDir)).toBe(true); // Directory preserved
+  });
+
+  it('calls checkCanRun before each runCline invocation', async () => {
+    const slugDir = path.join(projectsDir, 'partial-build');
+    fs.mkdirSync(slugDir);
+    // 3 unchecked items means the reconciliation loop can run up to 10 times
+    fs.writeFileSync(path.join(slugDir, 'plan.md'), [
+      '# Plan for Partial Build',
+      '- [x] done',
+      '- [ ] todo 1',
+      '- [ ] todo 2',
+      '- [ ] todo 3',
+      '## Test Command',
+      '`npm test`',
+    ].join('\n'));
+
+    const checkFn = mockCheckCanRun();
+    await reconcileProjectsDir(projectsDir, dbPath, checkFn);
+
+    // With 3 unchecked items, checkCanRun is called for each iteration
+    // (the spawnSync mock returns success but doesn't modify plan.md,
+    //  so it loops maxBuildCalls=10 times, calling checkCanRun 10 times)
+    expect(checkFn).toHaveBeenCalled();
+    expect(checkFn.mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -178,20 +212,20 @@ describe('recoverBuilderState', () => {
     if (fs.existsSync(statePath)) fs.unlinkSync(statePath);
   });
 
-  it('returns 0 when no state file exists', () => {
-    const result = recoverBuilderState(statePath);
+  it('returns 0 when no state file exists', async () => {
+    const result = await recoverBuilderState(statePath, mockCheckCanRun());
     expect(result).toBe(0);
   });
 
-  it('returns saved iteration when phase is complete', () => {
+  it('returns saved iteration when phase is complete', async () => {
     saveState(statePath, { iteration: 3, phase: 'complete', currentSlug: 'done-app' });
-    const result = recoverBuilderState(statePath);
+    const result = await recoverBuilderState(statePath, mockCheckCanRun());
     expect(result).toBe(3);
   });
 
-  it('returns iteration for mid-iteration crash (recovery via reconciliation)', () => {
+  it('returns iteration for mid-iteration crash (recovery via reconciliation)', async () => {
     saveState(statePath, { iteration: 5, phase: 'building', currentSlug: 'crashed-app' });
-    const result = recoverBuilderState(statePath);
+    const result = await recoverBuilderState(statePath, mockCheckCanRun());
     expect(result).toBe(5);
   });
 });

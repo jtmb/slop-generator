@@ -36,11 +36,11 @@ const API_KEY = process.env.API_KEY || '';
 
 // slop-orchestrator coordination
 const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || 'http://slop-orchestrator:3444';
-const httpAgent = new http.Agent({ keepAlive: true });
 
 const orch = axios.create({
   baseURL: ORCHESTRATOR_URL,
-  httpAgent,
+  // keepAlive: false to avoid EPIPE on reused sockets
+  httpAgent: new http.Agent({ keepAlive: false }),
   timeout: 10000,
 });
 
@@ -370,10 +370,13 @@ function getDbEntry(slug, dbPath = DB_PATH) {
  * - plan.md fully checked: run tests, push, update db if missing
  * - Dir with db entry already: skip
  *
+ * Respects the orchestrator — waits for builder's turn before each cline call.
+ *
  * @param {string} [projectsDir] - Override projects directory (for testing)
  * @param {string} [dbPath] - Override database path (for testing)
+ * @param {Function} [checkCanRunFn] - Override orchestrator check function (for testing)
  */
-function reconcileProjectsDir(projectsDir = PROJECTS_DIR, dbPath = DB_PATH) {
+async function reconcileProjectsDir(projectsDir = PROJECTS_DIR, dbPath = DB_PATH, checkCanRunFn = checkCanRun) {
   if (!existsSync(projectsDir)) return;
 
   const entries = readdirSync(projectsDir, { withFileTypes: true });
@@ -414,6 +417,7 @@ function reconcileProjectsDir(projectsDir = PROJECTS_DIR, dbPath = DB_PATH) {
           if (remaining === 0) break;
 
           logger.info({ slug, remaining, buildCall: buildCalls }, 'Reconciliation: executing next phase');
+          await checkCanRunFn();
           runCline(buildExecutePrompt(projectDir, planPath));
         }
       }
@@ -461,10 +465,11 @@ function reconcileProjectsDir(projectsDir = PROJECTS_DIR, dbPath = DB_PATH) {
  * Returns the iteration to resume from (0 if fresh start).
  *
  * @param {string} [statePath] - Override state file path (for testing)
+ * @param {Function} [checkCanRunFn] - Override orchestrator check function (for testing)
  */
-function recoverBuilderState(statePath) {
+async function recoverBuilderState(statePath, checkCanRunFn = checkCanRun) {
   // First, reconcile any interrupted project directories
-  reconcileProjectsDir();
+  await reconcileProjectsDir(undefined, undefined, checkCanRunFn);
 
   // Then check the state file
   const sp = statePath || undefined;
@@ -491,20 +496,31 @@ function recoverBuilderState(statePath) {
 
 /**
  * Poll the orchestrator until it's our turn to run.
- * Fails open — if the orchestrator is unreachable, proceed anyway.
+ * Does NOT fail open — if the orchestrator is unreachable,
+ * retries with backoff until it responds. Never proceeds without coordination.
  */
+const MAX_ORCHESTRATOR_RETRIES = 10;
+
 async function checkCanRun() {
+  let retries = 0;
   while (true) {
     try {
       const { data } = await orch.post('/check-in', { role: 'builder' });
+      retries = 0; // Reset on success
       if (data.can_run) {
         logger.info({ turn: data.turn, progress: data.progress }, 'Orchestrator says go');
         return;
       }
       logger.info({ turn: data.turn, progress: data.progress }, 'Orchestrator says wait — sleeping 30s');
     } catch (err) {
-      logger.warn({ err, orchestratorUrl: ORCHESTRATOR_URL }, 'Orchestrator unreachable — proceeding anyway');
-      return;
+      retries++;
+      if (retries > MAX_ORCHESTRATOR_RETRIES) {
+        throw new Error(`Orchestrator unreachable after ${MAX_ORCHESTRATOR_RETRIES} retries — giving up`);
+      }
+      const backoff = Math.min(retries * 5000, 30000);
+      logger.warn({ err, retries, backoffMs: backoff, orchestratorUrl: ORCHESTRATOR_URL }, 'Orchestrator unreachable — retrying');
+      await new Promise(r => setTimeout(r, backoff));
+      continue;
     }
     await new Promise(r => setTimeout(r, 30000));
   }
@@ -534,7 +550,7 @@ async function main() {
   configureProvider();
 
   // Recover from crash/restart — reconcile project dirs + resume iteration
-  const recoveredIteration = recoverBuilderState();
+  const recoveredIteration = await recoverBuilderState();
   let iteration = recoveredIteration;
 
   // If recovered from a mid-iteration crash, report progress for that iteration

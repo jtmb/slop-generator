@@ -1,9 +1,15 @@
 # App Idea Database
 *Last Updated: 2026-06-27*
 
-## Total Ideas Generated: 24
+## Total Ideas Generated: 27
 
 ---
+
+## Idea #27: PageTurn AI
+- **File Path**: `apps/page-turn-ai.md`
+- **Category**: Education / Reading / Personal Development
+- **Status**: Idea Generated
+- **Date Added**: 2026-06-27
 
 ## Idea #1: EcoTrack
 - **File Path**: `apps/eco-track.md`
@@ -134,6 +140,18 @@
 ## Idea #24: SoundSpace Curator
 - **File Path**: `apps/sound-space-curator.md`
 - **Category**: Music & Audio / Personalization / Wellness
+- **Status**: Idea Generated
+- **Date Added**: 2026-06-27
+
+## Idea #25: DIY Master Tracker
+- **File Path**: `apps/diy-master-tracker.md`
+- **Category**: Home Improvement / Education / Productivity
+- **Status**: Idea Generated
+- **Date Added**: 2026-06-27
+
+## Idea #26: LegacyLock
+- **File Path**: `apps/legacy-lock.md`
+- **Category**: Digital Estate / Personal Management / Memory Preservation
 - **Status**: Idea Generated
 - **Date Added**: 2026-06-27
 

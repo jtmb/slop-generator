@@ -9,7 +9,7 @@ This instruction fires for files that don't match a specific framework overlay. 
 
 ## Always Follow
 
-1. **Read AGENTS.md** — the `.clinerules/instructions/always-read-agents.instructions.md` instruction forces this before every code change.
+1. **Read AGENTS.md** — the `.github/instructions/always-read-agents.instructions.md` instruction forces this before every code change.
 
 2. **Write comments** — every function, class, and non-obvious block needs a human-readable comment explaining why and what.
 
@@ -21,7 +21,7 @@ This instruction fires for files that don't match a specific framework overlay. 
 
 ## Framework-Specific Rules
 
-If this project uses a framework with its own `.clinerules/instructions/{name}.instructions.md` file but your file isn't matching, check the `applyTo` glob in that file. To add framework support, see `USAGE.md` → "Add a New Framework Overlay."
+If this project uses a framework with its own `.github/instructions/{name}.instructions.md` file but your file isn't matching, check the `applyTo` glob in that file. To add framework support, see `USAGE.md` → "Add a New Framework Overlay."
 
 ## Build & Test
 

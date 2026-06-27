@@ -8,8 +8,7 @@ import { tmpdir } from 'os';
 import path from 'path';
 import fs from 'fs';
 
-// Use real fs for state persistence tests (tmpfiles)
-// but mock child_process for recovery tests
+// Mock child_process for recovery tests (spawnSync)
 vi.mock('child_process', () => ({
   spawnSync: vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', error: null })),
 }));
@@ -17,6 +16,11 @@ vi.mock('child_process', () => ({
 import { spawnSync } from 'child_process';
 import { loadState, saveState } from '../../slop-planner/lib/agent-state.js';
 import { recoverPlannerState } from '../../slop-planner/scripts/agent-runner.js';
+
+// Build a mock checkCanRun that resolves immediately (orchestrator says "go")
+function mockCheckCanRun() {
+  return vi.fn().mockResolvedValue(undefined);
+}
 
 function tempStatePath() {
   return path.join(tmpdir(), `test-state-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
@@ -131,21 +135,24 @@ describe('recoverPlannerState', () => {
     if (fs.existsSync(statePath + '.tmp')) fs.unlinkSync(statePath + '.tmp');
   });
 
-  it('returns 0 when no state file exists', () => {
-    const result = recoverPlannerState(statePath);
+  it('returns 0 when no state file exists', async () => {
+    const result = await recoverPlannerState(statePath, mockCheckCanRun());
     expect(result).toBe(0);
   });
 
-  it('returns saved iteration when phase is complete', () => {
+  it('returns saved iteration when phase is complete', async () => {
     saveState(statePath, { iteration: 4, phase: 'complete', currentSlug: null });
-    const result = recoverPlannerState(statePath);
+    const result = await recoverPlannerState(statePath, mockCheckCanRun());
     expect(result).toBe(4);
   });
 
-  it('re-runs planning + execution + git-sync when interrupted during planning', () => {
+  it('re-runs planning + execution + git-sync when interrupted during planning', async () => {
     saveState(statePath, { iteration: 3, phase: 'planning', currentSlug: null });
-    const result = recoverPlannerState(statePath);
+    const checkFn = mockCheckCanRun();
+    const result = await recoverPlannerState(statePath, checkFn);
 
+    // Should have called checkCanRun twice (before plan + before execute)
+    expect(checkFn).toHaveBeenCalled();
     // Should have called cline twice (plan + execute) and git-sync once
     expect(spawnSync).toHaveBeenCalled();
     // Returns the iteration (now complete)
@@ -157,31 +164,36 @@ describe('recoverPlannerState', () => {
     expect(saved.iteration).toBe(3);
   });
 
-  it('re-runs execution + git-sync when interrupted during execution', () => {
+  it('re-runs execution + git-sync when interrupted during execution', async () => {
     saveState(statePath, { iteration: 5, phase: 'execution', currentSlug: null });
-    const result = recoverPlannerState(statePath);
+    const checkFn = mockCheckCanRun();
+    const result = await recoverPlannerState(statePath, checkFn);
 
+    // Should have called checkCanRun once (before execute phase)
+    expect(checkFn).toHaveBeenCalled();
     expect(result).toBe(5);
     const saved = loadState(statePath);
     expect(saved.phase).toBe('complete');
     expect(saved.iteration).toBe(5);
   });
 
-  it('re-runs only git-sync when interrupted during git-sync', () => {
+  it('re-runs only git-sync when interrupted during git-sync', async () => {
     saveState(statePath, { iteration: 2, phase: 'git-sync', currentSlug: null });
-    const result = recoverPlannerState(statePath);
+    const checkFn = mockCheckCanRun();
+    const result = await recoverPlannerState(statePath, checkFn);
 
     expect(result).toBe(2);
     const saved = loadState(statePath);
     expect(saved.phase).toBe('complete');
   });
 
-  it('returns iteration even when recovery spawn encounters errors', () => {
+  it('returns iteration even when recovery spawn encounters errors', async () => {
     saveState(statePath, { iteration: 6, phase: 'planning', currentSlug: null });
     spawnSync.mockImplementation(() => { throw new Error('spawn failed'); });
 
+    const checkFn = mockCheckCanRun();
     // Should not throw — catches errors and returns the iteration
-    const result = recoverPlannerState(statePath);
+    const result = await recoverPlannerState(statePath, checkFn);
     expect(result).toBe(6);
   });
 });
