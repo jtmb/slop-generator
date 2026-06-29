@@ -107,6 +107,10 @@ services:
     container_name: slop-orchestrator
     restart: unless-stopped
 
+    depends_on:
+      slop-api:
+        condition: service_healthy
+
     env_file:
       - ./slop-orchestrator/config/.env
 

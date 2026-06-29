@@ -80,7 +80,7 @@ describe('updateDatabase', () => {
     mockExistsSync.mockReturnValue(false);
     mockReadFileSync.mockReturnValue('');
 
-    updateDatabase('eco-track', 'EcoTrack', 'Complete');
+    updateDatabase('eco-track', 'EcoTrack', 'Complete', '/tmp/test-db.md');
 
     expect(mockMkdirSync).toHaveBeenCalled();
     const writeCall = mockWriteFileSync.mock.calls[0];
@@ -101,7 +101,7 @@ describe('updateDatabase', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(existingDb);
 
-    updateDatabase('eco-track', 'EcoTrack', 'Complete');
+    updateDatabase('eco-track', 'EcoTrack', 'Complete', '/tmp/test-db.md');
 
     const writeCall = mockWriteFileSync.mock.calls[0];
     const content = writeCall[1];
@@ -122,7 +122,7 @@ describe('updateDatabase', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(existingDb);
 
-    updateDatabase('budget-buddy-ai', 'BudgetBuddy', 'Tests Failed');
+    updateDatabase('budget-buddy-ai', 'BudgetBuddy', 'Tests Failed', '/tmp/test-db.md');
 
     const writeCall = mockWriteFileSync.mock.calls[0];
     const content = writeCall[1];
@@ -139,7 +139,7 @@ describe('updateDatabase', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(existingDb);
 
-    updateDatabase('eco-track', 'EcoTrack', 'Complete');
+    updateDatabase('eco-track', 'EcoTrack', 'Complete', '/tmp/test-db.md');
 
     const writeCall = mockWriteFileSync.mock.calls[0];
     const content = writeCall[1];
@@ -149,5 +149,72 @@ describe('updateDatabase', () => {
     expect(matches.length).toBe(1);
     // Total should remain 1
     expect(content).toContain('## Total Projects Built: 1');
+  });
+});
+
+describe('getFailedProjects', () => {
+  let getFailedProjects;
+
+  beforeEach(async () => {
+    const mod = await import('../../slop-builder/scripts/agent-runner.js');
+    getFailedProjects = mod.getFailedProjects;
+  });
+
+  it('returns empty when db.md does not exist', () => {
+    mockExistsSync.mockReturnValue(false);
+    expect(getFailedProjects('/tmp/db.md')).toEqual([]);
+  });
+
+  it('returns Tests Failed projects', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(
+      '## Project #1: EcoTrack\n- **Slug**: `eco-track`\n- **Status**: Tests Failed\n\n' +
+      '## Project #2: BudgetBuddy\n- **Slug**: `budget-buddy`\n- **Status**: Complete\n'
+    );
+    const result = getFailedProjects('/tmp/db.md');
+    expect(result).toHaveLength(1);
+    expect(result[0].slug).toBe('eco-track');
+  });
+
+  it('returns Built (push failed) projects', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(
+      '## Project #1: EcoTrack\n- **Slug**: `eco-track`\n- **Status**: Built (push failed)\n'
+    );
+    const result = getFailedProjects('/tmp/db.md');
+    expect(result).toHaveLength(1);
+    expect(result[0].slug).toBe('eco-track');
+  });
+
+  it('returns Complete (tests failed) projects for retry', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(
+      '## Project #1: EcoTrack\n- **Slug**: `eco-track`\n- **Status**: Complete (tests failed)\n\n' +
+      '## Project #2: BudgetBuddy\n- **Slug**: `budget-buddy`\n- **Status**: Complete\n'
+    );
+    const result = getFailedProjects('/tmp/db.md');
+    expect(result).toHaveLength(1);
+    expect(result[0].slug).toBe('eco-track');
+  });
+
+  it('does not return Complete projects', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(
+      '## Project #1: EcoTrack\n- **Slug**: `eco-track`\n- **Status**: Complete\n'
+    );
+    const result = getFailedProjects('/tmp/db.md');
+    expect(result).toHaveLength(0);
+  });
+
+  it('returns projects sorted oldest-first', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(
+      '## Project #1: Alpha\n- **Slug**: `alpha`\n- **Status**: Tests Failed\n\n' +
+      '## Project #2: Beta\n- **Slug**: `beta`\n- **Status**: Complete (tests failed)\n\n' +
+      '## Project #3: Gamma\n- **Slug**: `gamma`\n- **Status**: Tests Failed\n'
+    );
+    const result = getFailedProjects('/tmp/db.md');
+    expect(result).toHaveLength(3);
+    expect(result.map(r => r.slug)).toEqual(['alpha', 'beta', 'gamma']);
   });
 });

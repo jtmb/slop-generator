@@ -36,9 +36,9 @@ describe('buildPlanPrompt', () => {
     expect(prompt).toContain('**Target Audience**');
   });
 
-  it('mentions the file system tool', () => {
+  it('mentions the run_commands tool', () => {
     const prompt = buildPlanPrompt();
-    expect(prompt).toContain('file system tool');
+    expect(prompt).toContain('run_commands');
   });
 });
 
@@ -59,7 +59,7 @@ describe('buildAgentPrompt', () => {
 
   it('tells cline to actually create files', () => {
     const prompt = buildAgentPrompt();
-    expect(prompt).toContain('actually do it');
-    expect(prompt).toContain('create and update files');
+    expect(prompt).toContain('do not just describe');
+    expect(prompt).toContain('create and update');
   });
 });

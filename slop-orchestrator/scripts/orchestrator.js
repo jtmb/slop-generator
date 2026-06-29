@@ -10,223 +10,89 @@
  *
  * Workers poll /check-in before each iteration and report /progress after.
  * The orchestrator is purely internal — no auth, no host port exposure.
+ *
+ * Files:
+ *   orchestrator.js   — Express app, routes, startup (this file)
+ *   state-manager.js  — In-memory state, atomic disk persistence
+ *   catch-up.js       — Ratio evaluation, catch-up mode activation/deactivation
+ *   git-push.js       — Git repo operations (clone, commit, push)
+ *   issue-tracker.js  — GitHub issue creation for failing projects
  */
 
 import express from 'express';
 import dotenv from 'dotenv';
-import https from 'https';
-import axios from 'axios';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'fs';
 import logger from '../lib/logger.js';
+import { state, BATCH_SIZE, restoreState, persistState } from './state-manager.js';
+import { api, evaluateCatchUpMode } from './catch-up.js';
 import { ensureGitRepo, syncApps, syncAllProjects } from './git-push.js';
+import { syncFailedProjectIssues, closeResolvedProjectIssues } from './issue-tracker.js';
 
 dotenv.config();
 
 const PORT = parseInt(process.env.ORCHESTRATOR_PORT || '3444', 10);
-const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || '6', 10);
-const STATE_FILE = '/tmp/orchestrator-state.json';
 const GIT_REPO_URL = process.env.GIT_REPO_URL || '';
-
-// Catch-up mode thresholds — activates when ideas/projects >= threshold (2:1 target)
-// and deactivates when ratio recovers to target or below
-const CATCH_UP_RATIO_THRESHOLD = parseFloat(process.env.CATCH_UP_RATIO_THRESHOLD || '2');
-const CATCH_UP_TARGET_RATIO = parseFloat(process.env.CATCH_UP_TARGET_RATIO || '1.9');
-
-// slop-api access for fetching ideas/projects counts
-const API_BASE_URL = process.env.API_BASE_URL || 'https://slop-api:3443';
-const API_KEY = process.env.API_KEY || '';
-
-// In-memory state — resets to PLANNER_TURN on restart unless persisted
-const state = {
-  turn: 'planner',
-  plannerProgress: 0,
-  builderProgress: 0,
-  catchUpMode: false,
-  ideasCount: 0,
-  projectsCount: 0,
-};
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 
 /**
- * Restore orchestrator state from disk after a restart.
- * Reads the JSON state file written on the last state mutation.
+ * Retry issue sync with exponential backoff.
+ * slop-api may still be starting when the orchestrator first comes up,
+ * so we retry a few times before giving up.
+ *
+ * @param {object} apiClient - Axios instance for slop-api
+ * @param {string} gitRepoUrl - GitHub repo URL
+ * @param {number} maxRetries - Maximum retry attempts (default 5)
+ * @returns {Promise<{created: number, skipped: number}>}
  */
-function restoreState() {
-  try {
-    if (!existsSync(STATE_FILE)) return;
+async function retryIssueSync(apiClient, gitRepoUrl, maxRetries = 5) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const result = await syncFailedProjectIssues(apiClient, gitRepoUrl);
 
-    const raw = readFileSync(STATE_FILE, 'utf-8');
-    const saved = JSON.parse(raw);
-
-    if (saved.turn && ['planner', 'builder'].includes(saved.turn)) {
-      state.turn = saved.turn;
-      state.plannerProgress = typeof saved.plannerProgress === 'number' ? saved.plannerProgress : 0;
-      state.builderProgress = typeof saved.builderProgress === 'number' ? saved.builderProgress : 0;
-      state.catchUpMode = saved.catchUpMode === true;
-      state.ideasCount = typeof saved.ideasCount === 'number' ? saved.ideasCount : 0;
-      state.projectsCount = typeof saved.projectsCount === 'number' ? saved.projectsCount : 0;
-      logger.info({ restored: saved }, 'Restored orchestrator state from disk');
+    // If we got a connection error (returned 0,0 with an internal error),
+    // the function already logged it. Wait and retry.
+    if (result.error) {
+      const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
+      logger.info({ attempt: attempt + 1, maxRetries, delay },
+        'Retrying issue sync after connection failure');
+      await new Promise(resolve => setTimeout(resolve, delay));
+      continue;
     }
-  } catch (err) {
-    logger.warn({ err }, 'Failed to restore orchestrator state — starting fresh');
+
+    // Success or no failing projects — either is fine
+    return result;
   }
+
+  // All retries exhausted
+  logger.error({ maxRetries }, 'Issue sync failed after all retries');
+  return { created: 0, skipped: 0 };
 }
 
 /**
- * Persist the current state to disk atomically.
- * Called on every state mutation to survive orchestrator restarts.
+ * Run both issue creation and issue closing in a single fire-and-forget pass.
+ * Creates issues for newly-failing projects and closes issues for projects
+ * that have been fixed since their issue was created.
+ *
+ * @param {object} apiClient - Axios instance for slop-api
+ * @param {string} gitRepoUrl - GitHub repo URL
+ * @param {string} context - Label for log messages (e.g. "startup", "catch-up", "batch")
  */
-function persistState() {
-  try {
-    const tmpPath = STATE_FILE + '.tmp';
-    mkdirSync('/tmp', { recursive: true });
-    writeFileSync(tmpPath, JSON.stringify({
-      turn: state.turn,
-      plannerProgress: state.plannerProgress,
-      builderProgress: state.builderProgress,
-      catchUpMode: state.catchUpMode,
-      ideasCount: state.ideasCount,
-      projectsCount: state.projectsCount,
-      lastUpdated: new Date().toISOString(),
-    }, null, 2), 'utf-8');
-    try {
-      renameSync(tmpPath, STATE_FILE);
-    } catch (renameErr) {
-      // Atomic rename can fail with EBUSY/EPERM on Docker volume bind mounts.
-      if (renameErr.code === 'EBUSY' || renameErr.code === 'EPERM') {
-        writeFileSync(STATE_FILE, JSON.stringify({
-          turn: state.turn,
-          plannerProgress: state.plannerProgress,
-          builderProgress: state.builderProgress,
-          catchUpMode: state.catchUpMode,
-          ideasCount: state.ideasCount,
-          projectsCount: state.projectsCount,
-          lastUpdated: new Date().toISOString(),
-        }, null, 2), 'utf-8');
-        try { unlinkSync(tmpPath); } catch (_) { /* ignore */ }
-      } else {
-        throw renameErr;
-      }
+function syncAllIssues(apiClient, gitRepoUrl, context) {
+  // Create issues for newly-failing projects
+  syncFailedProjectIssues(apiClient, gitRepoUrl).then(({ created, skipped, error }) => {
+    if (error) {
+      logger.error({ error, context }, 'Issue creation failed');
+    } else if (created > 0) {
+      logger.info({ created, skipped, context }, 'Issues created');
     }
-  } catch (err) {
-    logger.warn({ err }, 'Failed to persist orchestrator state');
-  }
-}
+  }).catch(err => logger.error({ err, context }, 'Issue creation threw'));
 
-// ---------------------------------------------------------------------------
-// slop-api access — authenticate and fetch ideas/projects counts for catch-up mode
-// ---------------------------------------------------------------------------
-
-let jwtToken = null;
-
-const api = axios.create({
-  baseURL: API_BASE_URL,
-  httpsAgent: new https.Agent({ rejectUnauthorized: false }),
-  timeout: 15000,
-});
-
-/**
- * Authenticate with slop-api and cache the JWT.
- */
-async function authenticate() {
-  if (jwtToken) return jwtToken;
-
-  logger.info({ apiBaseUrl: API_BASE_URL }, 'Orchestrator authenticating with slop-api');
-  const { data } = await api.post('/api/v1/auth/token', { api_key: API_KEY });
-  jwtToken = data.token;
-  return jwtToken;
-}
-
-/**
- * Fetch current ideas and projects counts from slop-api.
- * Returns { ideasCount, projectsCount, ideasToProjects } or null on failure.
- */
-async function fetchRatios() {
-  try {
-    const token = await authenticate();
-    const headers = { Authorization: `Bearer ${token}` };
-
-    const [ideasRes, projectsRes] = await Promise.all([
-      api.get('/api/v1/ideas', { headers }),
-      api.get('/api/v1/projects', { headers }),
-    ]);
-
-    const ideasCount = ideasRes.data.count || 0;
-
-    // Only count genuinely completed projects (status === "Complete").
-    // "Complete (tests failed)" projects aren't truly functional and
-    // shouldn't count toward the ratio.
-    const allProjects = projectsRes.data.projects || [];
-    const projectsCount = allProjects.filter(p => p.status === 'Complete').length;
-
-    const ideasToProjects = projectsCount > 0 ? ideasCount / projectsCount : Infinity;
-
-    logger.debug({
-      ideasCount,
-      projectsCount,
-      totalProjects: allProjects.length,
-      ideasToProjects,
-    }, 'Fetched ratios from slop-api');
-    return { ideasCount, projectsCount, ideasToProjects };
-  } catch (err) {
-    logger.warn({ err: err?.message }, 'Failed to fetch ratios from slop-api');
-    return null;
-  }
-}
-
-/**
- * Evaluate whether to enter or exit catch-up mode based on ideas-to-projects ratio.
- *
- * Catch-up mode activates when ideas / projects >= CATCH_UP_RATIO_THRESHOLD (default 2,
- * meaning 2:1 ratio — e.g., 12 ideas for 6 projects).
- * It deactivates when ideas / projects <= CATCH_UP_TARGET_RATIO (default 1.9).
- *
- * During catch-up mode, the builder runs exclusively to close the idea gap.
- * Only the planner is blocked — the builder continues as normal.
- *
- * Returns { changed: boolean, activated?: boolean, deactivated?: boolean, ratios?: object }
- */
-async function evaluateCatchUpMode() {
-  // Skip API calls during tests — Vitest sets VITEST env var automatically.
-  // Without this guard, evaluateCatchUpMode hangs waiting for slop-api which
-  // doesn't exist in the test environment.
-  if (process.env.VITEST) return { changed: false, reason: 'test_mode' };
-
-  const ratios = await fetchRatios();
-  if (!ratios) return { changed: false, reason: 'unreachable' };
-
-  state.ideasCount = ratios.ideasCount;
-  state.projectsCount = ratios.projectsCount;
-
-  // Activate catch-up mode when ratio exceeds threshold
-  if (!state.catchUpMode && ratios.ideasToProjects >= CATCH_UP_RATIO_THRESHOLD) {
-    state.catchUpMode = true;
-    persistState();
-    logger.warn({
-      ideasCount: ratios.ideasCount,
-      projectsCount: ratios.projectsCount,
-      ratio: ratios.ideasToProjects.toFixed(2),
-      threshold: CATCH_UP_RATIO_THRESHOLD,
-    }, 'CATCH-UP MODE ACTIVATED — builder runs exclusively until ratio recovers');
-    return { changed: true, activated: true, ratios };
-  }
-
-  // Deactivate catch-up mode when ratio recovers to target
-  if (state.catchUpMode && ratios.ideasToProjects <= CATCH_UP_TARGET_RATIO) {
-    state.catchUpMode = false;
-    state.turn = 'planner';
-    state.plannerProgress = 0;
-    state.builderProgress = 0;
-    persistState();
-    logger.info({
-      ideasCount: ratios.ideasCount,
-      projectsCount: ratios.projectsCount,
-      ratio: ratios.ideasToProjects.toFixed(2),
-      target: CATCH_UP_TARGET_RATIO,
-    }, 'Catch-up mode deactivated — ratio recovered, resuming normal turns');
-    return { changed: true, deactivated: true, ratios };
-  }
-
-  return { changed: false, reason: 'no_action_needed' };
+  // Close issues for projects that are now passing
+  closeResolvedProjectIssues(apiClient, gitRepoUrl).then(({ closed, skipped, error }) => {
+    if (error) {
+      logger.error({ error, context }, 'Issue closing failed');
+    } else if (closed > 0) {
+      logger.info({ closed, skipped, context }, 'Issues closed');
+    }
+  }).catch(err => logger.error({ err, context }, 'Issue closing threw'));
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +164,7 @@ app.post('/check-in', async (req, res) => {
     }
 
     // Re-check ratio on every check-in to catch ratio recovery ASAP
-    await evaluateCatchUpMode();
+    await evaluateCatchUpMode(state, persistState);
 
     const progress = role === 'planner' ? state.plannerProgress : state.builderProgress;
     const completionRatio = state.projectsCount > 0
@@ -387,7 +253,12 @@ app.post('/progress', async (req, res) => {
     // -----------------------------------------------------------------------
     if (state.catchUpMode) {
       // Re-evaluate ratio after every builder iteration
-      const evalResult = await evaluateCatchUpMode();
+      const evalResult = await evaluateCatchUpMode(state, persistState);
+
+      // Fire-and-forget issue sync for failing projects (create + close)
+      if (GIT_REPO_URL && GITHUB_TOKEN) {
+        syncAllIssues(api, GIT_REPO_URL, 'catch-up');
+      }
 
       if (evalResult.changed && evalResult.deactivated) {
         // Ratio recovered — exit catch-up mode, turn already reset to planner
@@ -449,6 +320,11 @@ app.post('/progress', async (req, res) => {
         } else {
           // Builder batch done — sync new projects to git
           syncAllProjects().catch(err => logger.warn({ err }, 'Post-builder git sync failed'));
+
+          // Sync failing-project issues on builder batch completion (create + close)
+          if (GIT_REPO_URL && GITHUB_TOKEN) {
+            syncAllIssues(api, GIT_REPO_URL, 'batch');
+          }
         }
       }
     } else {
@@ -524,10 +400,27 @@ if (isMainModule) {
     }).catch(err => {
       logger.warn({ err }, 'Initial git sync failed');
     });
+
+    // Sync failing-project issues after startup (retry up to 5 times with backoff)
+    if (GIT_REPO_URL && GITHUB_TOKEN) {
+      retryIssueSync(api, GIT_REPO_URL, 5).then(({ created, skipped }) => {
+        logger.info({ created, skipped }, 'Initial issue sync complete');
+      }).catch(err => {
+        logger.error({ err }, 'Initial issue sync failed after retries');
+      });
+      // Also close issues for any projects that have already been fixed
+      closeResolvedProjectIssues(api, GIT_REPO_URL).then(({ closed, skipped, error }) => {
+        if (error) {
+          logger.error({ error }, 'Initial issue close failed');
+        } else if (closed > 0) {
+          logger.info({ closed, skipped }, 'Initial issue close complete');
+        }
+      }).catch(err => logger.error({ err }, 'Initial issue close threw'));
+    }
   }
 
   // Check initial ratio — may activate catch-up mode immediately if ideas >> projects
-  evaluateCatchUpMode().then(result => {
+  evaluateCatchUpMode(state, persistState).then(result => {
     if (result.changed && result.activated) {
       logger.warn({ ideasCount: state.ideasCount, projectsCount: state.projectsCount },
         'Started in catch-up mode — builder will run exclusively');
@@ -557,12 +450,9 @@ export {
   app,
   state,
   BATCH_SIZE,
-  CATCH_UP_RATIO_THRESHOLD,
-  CATCH_UP_TARGET_RATIO,
   restoreState,
   persistState,
   GIT_REPO_URL,
   syncAllProjects,
-  fetchRatios,
   evaluateCatchUpMode,
 };

@@ -71,7 +71,22 @@ flowchart TD
 - **Error resilience**: Network errors skip individual slugs and retry on next cycle; auth errors clear the JWT and break the batch
 - **Parsed format**: `parsePlannerAppFile()` converts planner's markdown into the API's structured JSON shape (name, slug, overview, problemSolved, targetAudience, keyFeatures, monetization, techStack, implementationPlan)
 
-## Configuration
+## File Structure (Module-Per-Responsibility)
+
+The planner's `scripts/` directory is split into single-concern modules. The main `agent-runner.js` is a thin orchestrator — it imports all modules, runs the `main()` loop, and re-exports symbols for test compatibility.
+
+```
+slop-planner/scripts/
+├── agent-runner.js        # Thin orchestrator: main() loop + re-exports (~110 lines)
+├── agent.js               # configureProvider() + runCline() (spawnSync)
+├── prompt-builder.js      # buildPlanPrompt() + buildAgentPrompt()
+├── database.js            # parsePlannerDb() + parsePlannerAppFile() + postedSlugs tracking
+├── api-client.js          # authenticate() + postIdeasToApi()
+├── orchestrator-client.js # checkCanRun() + reportProgress()
+└── recovery.js            # recoverPlannerState()
+```
+
+All symbols are re-exported from `agent-runner.js` so existing test imports work unchanged.
 
 - **config/settings.json**: max_iterations (default 50), timeout_ms (default 300000)
 - **config/.env**: CLINE_API_BASE_URL, CLINE_MODEL, API_KEY

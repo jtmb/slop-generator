@@ -293,6 +293,19 @@ See [GIT_OPS.md](./GIT_OPS.md) for the full git strategy and working directory s
 
 ---
 
+## File Structure (Module-Per-Responsibility)
+
+The orchestrator's `scripts/` directory is split into single-concern modules:
+
+```
+slop-orchestrator/scripts/
+├── orchestrator.js       # Express server, routes, state machine, main()
+├── state-store.js        # loadState() + saveState() + restoreState()
+└── git-push.js           # ensureGitRepo() + syncApps() + syncProject() + commitAndPush()
+```
+
+---
+
 ## Configuration
 
 | Variable | Default | Purpose |

@@ -1,5 +1,5 @@
 /**
- * Tests for the leaf-level markdown parsers exported from api-server.js.
+ * Tests for the leaf-level markdown parsers exported from parsers.js.
  * These are pure functions — no filesystem dependencies.
  *
  * parseBulletList, parseKeyFeatures, parseStrategyList,
@@ -12,7 +12,7 @@ import {
   parseStrategyList,
   parseTechStack,
   parseProgressChecklist,
-} from '../../slop-api/scripts/api-server.js';
+} from '../../slop-api/scripts/parsers.js';
 
 describe('parseBulletList', () => {
   it('extracts dash-prefixed lines into array', () => {

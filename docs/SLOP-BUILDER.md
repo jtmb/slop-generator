@@ -216,6 +216,26 @@ The `- [ ]` → `- [x]` checkbox format is critical — `parseNextUncheckedTask(
 
 ---
 
+## File Structure (Module-Per-Responsibility)
+
+The builder's `scripts/` directory is split into single-concern modules. The main `agent-runner.js` is a thin orchestrator — it imports all modules, runs the `main()` loop, and re-exports symbols for test compatibility.
+
+```
+slop-builder/scripts/
+├── agent-runner.js        # Thin orchestrator: main() loop + re-exports (~180 lines)
+├── agent.js               # configureProvider() + runCline() (async spawn + heartbeat)
+├── prompt-builder.js      # buildDeepPlanPrompt() + buildSimpleTaskPrompt() + buildExecutePrompt()
+├── database.js            # parseDatabase() + updateDatabase() + initializeDatabase() + checkoutIdea()
+├── api-client.js          # authenticate() + fetchRandomIdea() + uploadProject()
+├── orchestrator-client.js # checkCanRun() + reportProgress() + triggerGitSync()
+├── tests-runner.js        # runTests() (extract command from plan.md + spawnSync)
+└── recovery.js            # recoverBuilderState()
+```
+
+All symbols are re-exported from `agent-runner.js` so existing test imports work unchanged.
+
+---
+
 ## Configuration
 
 - **config/settings.json**: max_iterations (50), max_test_retries (3), timeout_ms (600000)

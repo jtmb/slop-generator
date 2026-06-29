@@ -240,6 +240,108 @@ curl -k https://localhost:3443/api/v1/ideas \
 
 ---
 
+### GET /api/v1/projects
+
+List all completed projects from `projects-db.md`.
+
+```bash
+TOKEN="eyJ..."
+curl -k https://localhost:3443/api/v1/projects \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response (200)**:
+```json
+{
+  "count": 7,
+  "projects": [
+    {
+      "id": 1,
+      "name": "MyApp",
+      "slug": "my-app",
+      "status": "Complete",
+      "dateCompleted": "2026-06-29"
+    }
+  ]
+}
+```
+
+**Status values**: Projects have status `"Complete"` (all tests passed) or `"Complete (tests failed)"` (uploaded but tests failed). Only `"Complete"` projects count toward the orchestrator's catch-up ratio.
+
+---
+
+### POST /api/v1/projects
+
+Upload a completed project as a multipart tar.gz archive. Used by slop-builder after a successful build.
+
+```bash
+TOKEN="eyJ..."
+curl -k https://localhost:3443/api/v1/projects \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "slug=my-app" \
+  -F "name=MyApp" \
+  -F "status=Complete" \
+  -F "project=@project.tar.gz"
+```
+
+**Success (201)**:
+```json
+{
+  "slug": "my-app",
+  "name": "MyApp",
+  "status": "Complete",
+  "size": 1258291
+}
+```
+
+**Error (409)** — duplicate slug:
+```json
+{
+  "error": { "code": "DUPLICATE_SLUG", "message": "Project with slug \"my-app\" already exists" }
+}
+```
+
+---
+
+### GET /api/v1/projects/:slug
+
+Get metadata for a single completed project.
+
+```bash
+TOKEN="eyJ..."
+curl -k https://localhost:3443/api/v1/projects/my-app \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response (200)**:
+```json
+{
+  "id": 1,
+  "name": "MyApp",
+  "slug": "my-app",
+  "status": "Complete",
+  "dateCompleted": "2026-06-29",
+  "size": 1258291
+}
+```
+
+---
+
+### GET /api/v1/projects/:slug/download
+
+Download the project's tar.gz archive as a binary stream.
+
+```bash
+TOKEN="eyJ..."
+curl -k https://localhost:3443/api/v1/projects/my-app/download \
+  -H "Authorization: Bearer $TOKEN" \
+  -o my-app.tar.gz
+```
+
+**Response (200)**: `Content-Type: application/gzip` binary stream.
+
+---
+
 ## Error Responses
 
 All errors follow a consistent shape:
@@ -262,6 +364,20 @@ All errors follow a consistent shape:
 | 404 | `NOT_FOUND` | No idea matches the requested slug |
 | 404 | `NO_IDEAS` | Database file exists but is empty or unparseable |
 | 500 | `INTERNAL_ERROR` | Unexpected server error (check container logs) |
+
+---
+
+## File Structure (Module-Per-Responsibility)
+
+The API's `scripts/` directory is split into single-concern modules:
+
+```
+slop-api/scripts/
+├── api-server.js          # Express app: middleware, route definitions, HTTPS listen
+├── parsers.js             # Markdown parsing: parseDatabase() + parseAppMarkdown()
+├── auth.js                # JWT creation and verification middleware
+└── db-utils.js            # Database utilities: generateSlug(), validateAppIdea(), normalizeDateFormat()
+```
 
 ---
 

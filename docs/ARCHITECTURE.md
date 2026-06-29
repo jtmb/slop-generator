@@ -38,6 +38,7 @@ graph TB
 - **Internal-only**: No host port exposure — HTTP on 3444 within slop-net
 - **State**: In-memory with JSON file persistence (`/tmp/orchestrator-state.json`) — survives container restarts
 - **Endpoints**: /health, /state, /check-in, /progress
+- **Catch-up mode**: When ideas/projects ratio ≥ 2:1, builder runs exclusively until ratio recovers to ≤1.9. Only `status === "Complete"` projects count — `"Complete (tests failed)"` are excluded.
 
 ### slop-planner — App Idea Generator (Worker)
 - **Role**: Autonomous agent that generates unique app concepts
@@ -91,6 +92,10 @@ flowchart LR
 | GET | /api/v1/ideas/random | JWT | Random idea |
 | GET | /api/v1/ideas/:slug | JWT | Single idea |
 | POST | /api/v1/ideas | JWT | Ingest new idea |
+| GET | /api/v1/projects | JWT | List completed projects |
+| POST | /api/v1/projects | JWT | Upload completed project (multipart tar.gz) |
+| GET | /api/v1/projects/:slug | JWT | Single project metadata |
+| GET | /api/v1/projects/:slug/download | JWT | Download project tar.gz archive |
 
 ## Builder Workflow (slop-builder)
 
@@ -141,6 +146,7 @@ Neither slop-api nor slop-builder depends on slop-planner at runtime. The planne
 
 ## Key Design Decisions
 
+- **Module-per-responsibility**: Every `scripts/` file is a single-concern module. The main `agent-runner.js` (or `orchestrator.js`/`api-server.js`) is a thin orchestrator that imports modules, sequences them, and re-exports symbols. No module exceeds 250 lines. See `.github/instructions/file-organization.instructions.md`.
 - **spawnSync over execSync**: Avoids shell quoting issues with multi-line prompts
 - **File-based plan handoff**: Each phase writes its output, next phase reads it
 - **Independent data per service**: No shared volumes — each service owns its data

@@ -113,7 +113,8 @@ describe('runTests', () => {
   });
 
   it('returns false when no test command can be determined', () => {
-    mockExistsSync.mockReturnValue(true);
+    // Only return true for plan.md, not package.json — so no fallback test cmd
+    mockExistsSync.mockImplementation((p) => !p.includes('package.json'));
     mockReadFileSync.mockReturnValue(
       'A plan with no test command anywhere.\nJust prose.\n'
     );

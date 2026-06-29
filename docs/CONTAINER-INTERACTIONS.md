@@ -205,6 +205,39 @@ stateDiagram-v2
 
 ---
 
+## Catch-Up Mode Interaction
+
+When ideas outnumber genuinely completed projects (status `"Complete"`) by more than 2:1, the orchestrator blocks the planner and lets the builder run exclusively until the ratio recovers:
+
+```mermaid
+sequenceDiagram
+    participant P as slop-planner
+    participant B as slop-builder
+    participant O as slop-orchestrator
+    participant A as slop-api
+
+    O->>A: GET /api/v1/ideas, GET /api/v1/projects
+    A-->>O: { count: 73 }, { count: 1 }
+    Note over O: Only "Complete" projects count<br/>Ratio 73:1 ≥ 2 → CATCH-UP MODE
+
+    P->>O: POST /check-in (role: planner)
+    O-->>P: { can_run: false, catch_up_mode: true }
+
+    B->>O: POST /check-in (role: builder)
+    O-->>B: { can_run: true, catch_up_mode: true }
+
+    loop Builder runs until ratio ≤ 1.9
+        B->>A: GET /ideas/random → build → test → POST /projects
+        B->>O: POST /progress
+        O->>A: Re-check ratio
+    end
+
+    Note over O: Ratio ≤ 1.9 → Exit catch-up, resume normal turns
+    O-->>P: { can_run: true, catch_up_mode: false }
+```
+
+---
+
 ## Self-Healing Sequence
 
 What happens when containers crash and restart:

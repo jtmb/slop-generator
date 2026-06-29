@@ -13,6 +13,18 @@ vi.mock('child_process', () => ({
   spawnSync: vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '', error: null })),
 }));
 
+// Prevent real HTTP calls during recovery (postIdeasToApi, reportProgress)
+vi.mock('../../slop-planner/scripts/api-client.js', () => ({
+  authenticate: vi.fn().mockResolvedValue('mock-jwt-token'),
+  postIdeasToApi: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../slop-planner/scripts/orchestrator-client.js', () => ({
+  checkCanRun: vi.fn().mockResolvedValue(undefined),
+  reportProgress: vi.fn().mockResolvedValue(undefined),
+  MAX_ORCHESTRATOR_RETRIES: 10,
+}));
+
 import { spawnSync } from 'child_process';
 import { loadState, saveState } from '../../slop-planner/lib/agent-state.js';
 import { recoverPlannerState } from '../../slop-planner/scripts/agent-runner.js';
@@ -136,20 +148,41 @@ describe('recoverPlannerState', () => {
   });
 
   it('returns 0 when no state file exists', async () => {
-    const result = await recoverPlannerState(statePath, mockCheckCanRun());
+    const result = await recoverPlannerState({
+      statePath,
+      checkCanRunFn: mockCheckCanRun(),
+      provider: 'lmstudio',
+      apiBaseUrl: 'https://slop-api:3443',
+      apiKey: 'test-key',
+      orchestratorUrl: 'http://orch:3444',
+    });
     expect(result).toBe(0);
   });
 
   it('returns saved iteration when phase is complete', async () => {
     saveState(statePath, { iteration: 4, phase: 'complete', currentSlug: null });
-    const result = await recoverPlannerState(statePath, mockCheckCanRun());
+    const result = await recoverPlannerState({
+      statePath,
+      checkCanRunFn: mockCheckCanRun(),
+      provider: 'lmstudio',
+      apiBaseUrl: 'https://slop-api:3443',
+      apiKey: 'test-key',
+      orchestratorUrl: 'http://orch:3444',
+    });
     expect(result).toBe(4);
   });
 
   it('re-runs planning + execution when interrupted during planning', async () => {
     saveState(statePath, { iteration: 3, phase: 'planning', currentSlug: null });
     const checkFn = mockCheckCanRun();
-    const result = await recoverPlannerState(statePath, checkFn);
+    const result = await recoverPlannerState({
+      statePath,
+      checkCanRunFn: checkFn,
+      provider: 'lmstudio',
+      apiBaseUrl: 'https://slop-api:3443',
+      apiKey: 'test-key',
+      orchestratorUrl: 'http://orch:3444',
+    });
 
     // Should have called checkCanRun (once for plan, once for execute)
     expect(checkFn).toHaveBeenCalled();
@@ -167,7 +200,14 @@ describe('recoverPlannerState', () => {
   it('re-runs execution when interrupted during execution', async () => {
     saveState(statePath, { iteration: 5, phase: 'execution', currentSlug: null });
     const checkFn = mockCheckCanRun();
-    const result = await recoverPlannerState(statePath, checkFn);
+    const result = await recoverPlannerState({
+      statePath,
+      checkCanRunFn: checkFn,
+      provider: 'lmstudio',
+      apiBaseUrl: 'https://slop-api:3443',
+      apiKey: 'test-key',
+      orchestratorUrl: 'http://orch:3444',
+    });
 
     // Should have called checkCanRun once (before execute phase)
     expect(checkFn).toHaveBeenCalled();
@@ -180,7 +220,14 @@ describe('recoverPlannerState', () => {
   it('returns iteration for unknown phase (legacy git-sync phase no longer exists)', async () => {
     saveState(statePath, { iteration: 2, phase: 'git-sync', currentSlug: null });
     const checkFn = mockCheckCanRun();
-    const result = await recoverPlannerState(statePath, checkFn);
+    const result = await recoverPlannerState({
+      statePath,
+      checkCanRunFn: checkFn,
+      provider: 'lmstudio',
+      apiBaseUrl: 'https://slop-api:3443',
+      apiKey: 'test-key',
+      orchestratorUrl: 'http://orch:3444',
+    });
 
     expect(result).toBe(2);
     // Legacy phase not handled — state unchanged
@@ -194,7 +241,14 @@ describe('recoverPlannerState', () => {
 
     const checkFn = mockCheckCanRun();
     // Should not throw — catches errors and returns the iteration
-    const result = await recoverPlannerState(statePath, checkFn);
+    const result = await recoverPlannerState({
+      statePath,
+      checkCanRunFn: checkFn,
+      provider: 'lmstudio',
+      apiBaseUrl: 'https://slop-api:3443',
+      apiKey: 'test-key',
+      orchestratorUrl: 'http://orch:3444',
+    });
     expect(result).toBe(6);
   });
 });

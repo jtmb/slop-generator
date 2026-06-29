@@ -148,6 +148,43 @@ The `details` object is injected directly into the builder's deep-planning promp
 
 ---
 
+---
+
+## Builder Upload Pattern
+
+After building and testing a project, the builder uploads it to the API as a tar.gz archive.
+
+**Flow:**
+
+```mermaid
+flowchart LR
+    B[Builder finishes build] --> T[Run tests]
+    T -->|passed| U[tar -czf project.tar.gz<br/>status: Complete]
+    T -->|failed| UF[tar -czf project.tar.gz<br/>status: Complete (tests failed)]
+    U --> P[POST /api/v1/projects<br/>multipart with slug, name, status, project]
+    UF --> P
+    P -->|201| D[Update local db.md]
+    P -->|409| S[Skip — already uploaded]
+    P -->|201| GS[POST /git-sync-projects<br/>to orchestrator]
+    GS --> GH[(GitHub push)]
+```
+
+**Upload code (from `agent-runner.js`):**
+
+```js
+const form = new FormData();
+form.append('slug', slug);
+form.append('name', name);
+form.append('status', testResult.passed ? 'Complete' : 'Complete (tests failed)');
+form.append('project', createReadStream(tarPath));
+
+await api.post('/api/v1/projects', form, {
+  headers: { ...form.getHeaders(), Authorization: `Bearer ${token}` },
+});
+```
+
+**Immediate git sync**: After successful upload, the builder triggers `POST /git-sync-projects` on the orchestrator, which downloads and extracts the archive into the git repo and pushes to GitHub — no need to wait for batch boundaries.
+
 ## Direct API Access (curl)
 
 All examples assume `API_KEY=slop-test-key-2026` in root `.env`.

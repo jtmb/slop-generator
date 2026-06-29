@@ -9,9 +9,25 @@ import { tmpdir } from 'os';
 import path from 'path';
 import fs from 'fs';
 
-// Mock child_process — all spawnSync calls must use the mock
+// Mock child_process — all spawn/spawnSync calls must use the mock
 vi.mock('child_process', () => ({
   spawnSync: vi.fn(() => ({ status: 0, stdout: '', stderr: '', error: null })),
+  spawn: vi.fn(() => {
+    const child = new (class MockChild {})();
+    child.stdout = { on: vi.fn(), resume: vi.fn() };
+    child.stderr = { on: vi.fn(), resume: vi.fn() };
+    child.on = vi.fn();
+    setTimeout(() => child.on.mock.calls.filter(c => c[0] === 'close')[0]?.[1]?.(0), 0);
+    return child;
+  }),
+}));
+
+// Mock orchestrator-client to prevent real HTTP calls in tests
+vi.mock('../../slop-builder/scripts/orchestrator-client.js', () => ({
+  checkCanRun: vi.fn().mockResolvedValue(undefined),
+  reportProgress: vi.fn().mockResolvedValue(undefined),
+  triggerGitSync: vi.fn().mockResolvedValue(undefined),
+  MAX_ORCHESTRATOR_RETRIES: 3,
 }));
 
 import { spawnSync } from 'child_process';
