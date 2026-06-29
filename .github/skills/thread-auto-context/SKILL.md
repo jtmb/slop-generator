@@ -145,27 +145,36 @@ If Cline's directory doesn't exist, just write `.cline/mcp.json` at the workspac
 
 ## Automatic Behavior
 
+### ⛔ SESSION RULE
+
+**If `.vscode/mcp.json` already has `THREAD_DEFAULT_SESSION` set, use it. Never create a different session.**
+
+- During **bootstrap** (fresh repo, no `.vscode/mcp.json`): the bridge auto-creates the session on first tool call. This is expected.
+- During **normal operation** (`.vscode/mcp.json` exists): the default session IS your session. Never pass `session` param. Never call `thread_create_session`. The only exception: the user explicitly says "create a session for X."
+
+I created `thread-dev` when `thread` was already configured — that was the bug. Don't do that.
+
 ### At Session Start
-- Run the bootstrap flow above (skip if already configured)
-- Determine the session name: use the workspace folder basename (e.g., `thread` from `/home/user/repos/thread`). Run `basename "$PWD"` to get it.
-- Call `thread_read_entries` with `sort: "desc"`, `limit: 10` to see the most recent entries (newest first)
-- Call `thread_search` with the user's first question to find relevant past context in that session
-- If results exist, summarize the most relevant entries before answering
+1. Read `.vscode/mcp.json` — note the `THREAD_DEFAULT_SESSION` value in `env`
+2. If `.vscode/mcp.json` just got created (bootstrap), the bridge will auto-create the session on the first tool call. Skip to search.
+3. If already configured: call `thread_read_entries` with `sort: "desc"`, `limit: 10` to see recent entries
+4. Search past context relevant to the user's first question using `thread_search`
+5. Summarize the most relevant entries before answering
 
 ### During the Session — MANDATORY CHECKLIST
 
-**These are NOT suggestions. You MUST do them at the time they happen, not later.**
+**These are NOT suggestions. You MUST do them at the time they happen, not later. Do NOT defer to session end.**
 
-Every time you complete a code change (write/edit/delete any file), pause and ask yourself:
+After EVERY code change (write/edit/delete/refactor), IMMEDIATELY save context before doing anything else:
 
 > **Did I just...**
-> - Make a design decision? → `thread_create_entry` NOW. Priority 8. Tags: `["decision"]`.
-> - Fix a bug with a non-obvious lesson? → `thread_create_entry` NOW. Priority 6. Tags: `["bug"]`.
+> - Make a design decision? → `thread_create_entry` NOW. Priority 8. Tags: `["decision"]`. Do NOT pass `session` param.
+> - Fix a bug with a non-obvious lesson? → `thread_create_entry` NOW. Priority 9. Tags: `["bug"]`. Include root cause.
 > - Hear the user express a preference? → `thread_create_entry` NOW. Priority 7. Tags: `["preference"]`.
 > - Hear the user state a constraint/deadline/requirement? → `thread_create_entry` NOW. Priority 9.
 > - Create or update a documentation file? → `thread_upload_file` NOW. Tags: `["reference", "docs"]`. Priority 4.
 
-**After every edit_* or create_file call, check this list before making the next edit.** If you forget and call `task_complete` without updating Thread, you have violated this rule.
+**If you call task_complete and haven't saved context since your last code change, you have violated this rule.** The `.github/instructions/thread-auto-context.instructions.md` instruction fires before every edit and will remind you.
 
 ### Storage Monitoring
 
@@ -223,7 +232,8 @@ Once `.vscode/mcp.json` is written, the VS Code MCP extension automatically dete
 Once the Cline MCP config is written (global settings and/or `.cline/mcp.json`), the user must **reload the Cline extension** for it to pick up the new server. Tell the user: "Reload the Cline extension (or the window) to activate the Thread MCP server." The Cline extension does NOT auto-detect config file changes — reload is manual.
 
 ## Session Names
-Use the user's current project name or topic as the session name. Default to the configured `THREAD_DEFAULT_SESSION` if you're unsure.
+
+**You do not pick the session name.** The MCP config in `.vscode/mcp.json` sets `THREAD_DEFAULT_SESSION` — that IS the session. Every `thread_*` tool defaults to it. Never pass `session` param unless the user explicitly asks. Only call `thread_create_session` if the user says "create a session."
 
 ## Priority Guidelines
 | Priority | When to use |
@@ -245,9 +255,12 @@ Use the user's current project name or topic as the session name. Default to the
 - Project-specific tags as appropriate
 
 ## Never
+- Don't create a session unless the user explicitly says "create a session"
+- Don't pass `session` param to thread_* tools unless user explicitly asks
 - Don't create entries without meaningful content (no "OK" or "Got it" entries)
 - Don't save the user's secrets, passwords, tokens, or API keys
 - Don't spam — if you just saved the same decision 2 minutes ago, don't save it again
+- Don't skip Thread save before calling task_complete — always save context first
 - Don't ask permission to use Thread — just use it silently
 - Don't skip the bootstrap — if Thread tools aren't available, fix it proactively
 - Don't start, build, or manage the Thread server — that's the user's job. Only check if it's reachable.

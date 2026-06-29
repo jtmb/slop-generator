@@ -1,9 +1,9 @@
 # App Idea Database
-*Last Updated: 2026-06-28*
+*Last Updated: 2026-06-29*
 
-## Total Ideas Generated: 55
+## Total Ideas Generated: 58
 
-## Total Ideas Generated: 56
+## Total Ideas Generated: 58
 
 ---
 
@@ -337,11 +337,11 @@
 
 ---
 
-*Use this file to track all app ideas. Before generating a new idea, review this database to ensure uniqueness.*
-# App Idea Database
-*Last Updated: 2026-06-28*
 
-## Total Ideas Generated: 56
+# App Idea Database
+*Last Updated: 2026-06-29*
+
+## Total Ideas Generated: 58
 
 ---
 
@@ -584,6 +584,20 @@
 ---
 
 *Use this file to track all app ideas. Before generating a new idea, review this database to ensure uniqueness.*
+---
+
+
+## Idea #58: EmergencyPrep AI
+- **File Path**: apps/emergencyprep-ai.md
+- **Category**: Safety / Emergency Preparedness / Family Coordination
+- **Status**: Idea Generated
+- **Date Added**: 2026-06-29
+## Idea #59: EcoHabit Builder
+- **File Path**: apps/eco-habit-builder.md
+- **Category**: Sustainability / Health & Wellness / Productivity
+- **Status**: Idea Generated
+- **Date Added**: 2026-06-29
+
 ---
 
 *Use this file to track all app ideas. Before generating a new idea, review this database to ensure uniqueness.*

@@ -319,9 +319,11 @@ function getFailedProjects() {
     const statusMatch = line.match(/^- \*\*Status\*\*: (.+)$/);
     if (statusMatch) {
       const status = statusMatch[1].trim();
+      // "Complete (tests failed)" means build succeeded but tests failed —
+      // the project is fully built and shouldn't be retried.
+      // Only truly failed builds (incomplete, push errors) should be retried.
       currentEntry.failed =
         status.includes('push failed') ||
-        status === 'Complete (tests failed)' ||
         status === 'Tests Failed';
       continue;
     }
@@ -984,6 +986,11 @@ async function reconcileProjectsDir(projectsDir = PROJECTS_DIR, dbPath = DB_PATH
       }
 
       updateDatabase(slug, slug, status);
+
+      // Trigger git sync so the project appears on GitHub immediately
+      // (turn-independent — does not require builder's turn in orchestrator)
+      await triggerGitSync();
+
       logger.info({ slug, status }, 'Reconciliation complete');
     } catch (reconcileError) {
       logger.error({ err: reconcileError, slug }, 'Reconciliation failed for project — leaving for next iteration');
@@ -1073,6 +1080,31 @@ async function reportProgress() {
     }
   } catch (err) {
     logger.warn({ err }, 'Failed to report progress to orchestrator');
+  }
+}
+
+/**
+ * Trigger an immediate git sync of all projects to GitHub via the orchestrator.
+ *
+ * Calls the orchestrator's /git-sync-projects endpoint which pulls any projects
+ * from slop-api that haven't yet been synced to the git repo. This is
+ * turn-independent — it works regardless of whose turn it is in the batch cycle.
+ *
+ * Safe to call at any time. Errors are logged but not thrown (fire-and-forget).
+ */
+async function triggerGitSync() {
+  try {
+    const { data } = await orch.post('/git-sync-projects');
+    if (data.synced > 0) {
+      logger.info({ synced: data.synced }, 'Git sync triggered — projects synced to GitHub');
+    }
+  } catch (err) {
+    // 400 = git not configured, 409 = not an error we care about, other = transient
+    if (err.response?.status === 400) {
+      logger.info('Git sync not configured — skipping');
+    } else {
+      logger.warn({ err }, 'Git sync trigger failed (non-fatal)');
+    }
   }
 }
 
@@ -1173,12 +1205,16 @@ async function main() {
         try {
           const existingPlan = existsSync(planPath) ? readFileSync(planPath, 'utf-8') : '';
           const uncheckedCount = (existingPlan.match(/- \[ \]/g) || []).length;
+          // Declare hadSkippedTasks OUTSIDE the uncheckedCount if-block so it's
+          // in scope for the finalStatus check below (line ~1246). When all plan
+          // items are already checked (uncheckedCount === 0), the inner block
+          // never executes, but we still need hadSkippedTasks accessible.
+          let hadSkippedTasks = false;
           if (uncheckedCount > 0) {
             let buildCalls = 0;
             const maxReconcileBuildCalls = 20;
             const taskRetryCount = new Map(); // task text → {count, lastError}
             const MAX_TASK_RETRIES = 3;
-            let hadSkippedTasks = false;
             while (buildCalls < maxReconcileBuildCalls) {
               buildCalls++;
               const plan = readFileSync(planPath, 'utf-8');
@@ -1363,6 +1399,9 @@ async function main() {
       let status = testResult.passed ? 'Complete' : 'Complete (tests failed)';
       try {
         await uploadProject(slug, idea.name, status);
+        // Trigger git sync immediately after successful upload so project appears
+        // on GitHub without waiting for the next batch boundary. Turn-independent.
+        await triggerGitSync();
       } catch (uploadError) {
         logger.warn({ err: uploadError, slug }, 'Project upload failed (non-fatal)');
         status = 'Built (push failed)';
@@ -1418,4 +1457,4 @@ if (isMainModule) {
   });
 }
 
-export { configureProvider, runCline, isAlreadyBuilt, runTests, updateDatabase, uploadProject, buildDeepPlanPrompt, buildExecutePrompt, buildSimpleTaskPrompt, buildTaskRetryPrompt, parseNextUncheckedTask, markTaskDone, extractPlanContext, killHubDaemons, authenticate, fetchRandomIdea, fetchIdeaBySlug, checkCanRun, reportProgress, getDbEntry, getFailedProjects, reconcileProjectsDir, recoverBuilderState, loadState, saveState };
+export { configureProvider, runCline, isAlreadyBuilt, runTests, updateDatabase, uploadProject, buildDeepPlanPrompt, buildExecutePrompt, buildSimpleTaskPrompt, buildTaskRetryPrompt, parseNextUncheckedTask, markTaskDone, extractPlanContext, killHubDaemons, authenticate, fetchRandomIdea, fetchIdeaBySlug, checkCanRun, reportProgress, triggerGitSync, getDbEntry, getFailedProjects, reconcileProjectsDir, recoverBuilderState, loadState, saveState };

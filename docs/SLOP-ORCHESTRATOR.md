@@ -16,10 +16,11 @@ flowchart LR
     O -->|can_run: true/false| B
 ```
 
-The orchestrator implements an alternating batch controller:
+The orchestrator implements an alternating batch controller with catch-up mode:
 
 ```
-planner generates N ideas → orchestrator flips to builder → builder builds N projects → orchestrator flips back
+Normal mode:     planner N → builder N → planner N → ...
+Catch-up mode:  builder continues until ideas/projects ratio recovers
 ```
 
 `N` is `BATCH_SIZE` (env var, default 6).
@@ -28,10 +29,11 @@ planner generates N ideas → orchestrator flips to builder → builder builds N
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | /health | none | Health check — status, current turn, batch size, progress |
+| GET | /health | none | Health check — status, current turn, batch size, progress, catch-up mode status |
 | GET | /state | none | Full state dump for debugging |
 | POST | /check-in | none | Worker asks "may I run?" — body: `{ "role": "planner"\|"builder" }` |
 | POST | /progress | none | Worker reports one completed iteration — body: `{ "role": "planner"\|"builder" }` |
+| POST | /git-sync-projects | none | Directly sync all new projects from slop-api to git (turn-independent) |
 
 ### Response Shapes
 
@@ -41,7 +43,11 @@ planner generates N ideas → orchestrator flips to builder → builder builds N
   "status": "ok",
   "turn": "planner",
   "batchSize": 6,
-  "plannerProgress": 3,
+  "catchUpMode": true,
+  "ideasCount": 71,
+  "projectsCount": 7,
+  "completionRatio": 10.14,
+  "plannerProgress": 0,
   "builderProgress": 0
 }
 ```
@@ -66,7 +72,26 @@ planner generates N ideas → orchestrator flips to builder → builder builds N
 }
 ```
 
-`can_run` is `true` only when the caller's role matches `turn`. Workers sleep 30s and retry when blocked.
+`can_run` is `true` only when the caller's role matches `turn` (or when catch-up mode is active and the caller is `builder`). Workers sleep 30s and retry when blocked.
+
+### Catch-Up Mode Response
+
+During catch-up mode, the check-in response includes the ratio:
+
+```json
+{
+  "can_run": false,
+  "turn": "planner",
+  "progress": 0,
+  "batchSize": 6,
+  "catch_up_mode": true,
+  "ideas_count": 71,
+  "projects_count": 7,
+  "completion_ratio": 10.14
+}
+```
+
+Planner always gets `can_run: false` in catch-up mode. Builder always gets `can_run: true`.
 
 #### POST /progress
 ```json
@@ -80,6 +105,20 @@ planner generates N ideas → orchestrator flips to builder → builder builds N
 
 When `progress` reaches `BATCH_SIZE`, `batch_complete` becomes `true`, the turn flips, and progress resets to 0.
 
+During catch-up mode, the progress response includes the catch-up flag:
+
+```json
+{
+  "batch_complete": false,
+  "turn": "builder",
+  "progress": 4,
+  "batchSize": 6,
+  "catch_up_mode": true
+}
+```
+
+When catch-up mode deactivates (ratio recovered), the progress handler returns `batch_complete: true` with `catch_up_mode: false`.
+
 ### Error Responses
 
 | Status | Code | When |
@@ -89,6 +128,8 @@ When `progress` reaches `BATCH_SIZE`, `batch_complete` becomes `true`, the turn 
 
 ## State Machine
 
+### Normal Mode (balance within threshold)
+
 ```mermaid
 stateDiagram-v2
     [*] --> PLANNER_TURN
@@ -97,16 +138,90 @@ stateDiagram-v2
 
     state PLANNER_TURN {
         [*] --> planner_running
-        planner_running --> planner_running : progress +1 (not yet batch)
+        planner_running --> planner_running : progress +1
         planner_running --> planner_done : progress = BATCH_SIZE
     }
 
     state BUILDER_TURN {
         [*] --> builder_running
-        builder_running --> builder_running : progress +1 (not yet batch)
+        builder_running --> builder_running : progress +1
         builder_running --> builder_done : progress = BATCH_SIZE
     }
 ```
+
+### Catch-Up Mode (ideas/projects ≥ threshold)
+
+```mermaid
+stateDiagram-v2
+    [*] --> NORMAL_MODE
+    NORMAL_MODE --> CATCH_UP_MODE : ratio >= 2 (ideas >> projects)
+    CATCH_UP_MODE --> NORMAL_MODE : ratio <= 1.9 (back to ~2:1)
+
+    state CATCH_UP_MODE {
+        [*] --> builder_running
+        builder_running --> builder_running : BATCH_SIZE done? continue
+        builder_running --> check_ratio : every progress report
+        check_ratio --> builder_running : ratio still high
+        check_ratio --> [*] : ratio recovered
+    }
+```
+
+## Catch-Up Mode — Auto-Balancing
+
+When the ideas-to-projects ratio exceeds 2:1 (e.g., 12 ideas for 6 projects), the orchestrator enters **catch-up mode**, forcing the builder to run exclusively until the ratio recovers back to ~2:1.
+
+### Triggers
+
+| Event | Condition | Action |
+|-------|-----------|--------|
+| **Enter catch-up** | `ideas / projects >= CATCH_UP_RATIO_THRESHOLD` (default 2) | Builder runs exclusively, planner blocked |
+| **Exit catch-up** | `ideas / projects <= CATCH_UP_TARGET_RATIO` (default 1.9) | Normal turn-based operation resumes |
+
+### Behavior
+
+- **Every check-in** re-evaluates the ratio (most responsive)
+- **Every builder progress report** re-evaluates the ratio (catches recovery ASAP)
+- At batch boundaries (`BATCH_SIZE`), git sync still fires for new projects
+- When ratio recovers, the turn resets to `planner` so the planner can start generating again
+- Catch-up mode state (`catchUpMode`, `ideasCount`, `projectsCount`) is persisted across restarts
+
+### Ratio Calculation
+
+Only projects with `status === "Complete"` count toward the projects side of the ratio.
+Projects with status like `"Complete (tests failed)"` are excluded — they failed their tests
+and aren't genuinely functional. This prevents the ratio from being artificially improved
+by broken builds.
+
+### Flow
+
+```mermaid
+flowchart TD
+    A[Worker checks in] --> B{evaluateCatchUpMode\ncall slop-api}
+    B --> C{ideas/projects >= 10?}
+    C{ideas/projects >= 2?}
+    C -->|Yes| D[Activate catch-up mode\ncatchUpMode = true]
+    C -->|No| E{Role == turn?}
+    D --> F{Role = builder?}
+    F -->|Yes| G[can_run: true\ncatch_up_mode: true]
+    F -->|No| H[can_run: false\ncatch_up_mode: true]
+    E -->|Yes| I[can_run: true]
+    E -->|No| J[can_run: false]
+
+    K[Builder progress] --> L{catchUpMode?}
+    L -->|Yes| M[evaluateCatchUpMode]
+    M --> N{ratio <= 1.25?}
+    N -->|Yes| O[Deactivate catch-up\nturn = planner\nreturn batch_complete: true]
+    N -->|No| P[Stay in catch-up\nnormal batch logic]
+    L -->|No| Q[Normal batch flip]
+```
+
+#### POST /git-sync-projects
+
+```json
+{ "synced": 3 }
+```
+
+Turn-independent git sync endpoint used by the builder's reconciliation flow. Calls `syncAllProjects()` directly without interacting with the turn-based state machine.
 
 ## Worker Integration
 
@@ -184,9 +299,22 @@ See [GIT_OPS.md](./GIT_OPS.md) for the full git strategy and working directory s
 |----------|---------|---------|
 | `ORCHESTRATOR_PORT` | 3444 | HTTP listen port |
 | `BATCH_SIZE` | 6 | Number of iterations before flipping turns |
+| `CATCH_UP_RATIO_THRESHOLD` | 10 | Ideas/projects ratio that triggers catch-up mode |
+| `CATCH_UP_TARGET_RATIO` | 1.25 | Ratio at which normal operation resumes (inverse of 80%) |
 | `LOG_LEVEL` | info | Pino log level |
 
 All variables can be overridden via environment variables at runtime.
+
+### Ratio Formula
+
+Both ratios use the same formula:
+
+```
+ideasToProjects = totalIdeas / totalProjects
+```
+
+- **Threshold (10)**: At 71 ideas / 7 projects = 10.14, catch-up activates
+- **Target (1.25)**: When projects catch up such that 50 ideas / 40 projects = 1.25, catch-up deactivates (80% completion rate)
 
 ## Container
 

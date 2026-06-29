@@ -5,9 +5,13 @@
  * Uses Node built-in http module (no supertest dependency needed).
  */
 
-import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from 'vitest';
 import http from 'http';
 import { app, state, BATCH_SIZE, persistState, restoreState } from '../../slop-orchestrator/scripts/orchestrator.js';
+
+// Note: catch-up mode route handlers call evaluateCatchUpMode() which tries to
+// reach slop-api (not available in tests). The orchestrator detects VITEST env
+// and skips the API call. See evaluateCatchUpMode() in orchestrator.js.
 
 let server;
 let baseURL;
@@ -31,6 +35,9 @@ beforeEach(() => {
   state.turn = 'planner';
   state.plannerProgress = 0;
   state.builderProgress = 0;
+  state.catchUpMode = false;
+  state.ideasCount = 0;
+  state.projectsCount = 0;
 });
 
 // Helper: send HTTP request returning { status, body }
@@ -287,5 +294,112 @@ describe('Orchestrator state persistence', () => {
     // State should be unchanged since there was no file to restore
     expect(state.turn).toBe('builder');
     expect(state.plannerProgress).toBe(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Catch-up mode
+// ---------------------------------------------------------------------------
+
+describe('Catch-up mode', () => {
+  beforeEach(() => {
+    // Reset state to defaults
+    state.turn = 'planner';
+    state.plannerProgress = 0;
+    state.builderProgress = 0;
+    state.catchUpMode = true; // Activate catch-up for these tests
+    state.ideasCount = 71;
+    state.projectsCount = 7;
+  });
+
+  it('blocks planner check-in when catch-up mode is active', async () => {
+    const res = await req('POST', '/check-in', { role: 'planner' });
+    expect(res.status).toBe(200);
+    expect(res.body.can_run).toBe(false);
+    expect(res.body.catch_up_mode).toBe(true);
+    expect(res.body.ideas_count).toBe(71);
+    expect(res.body.projects_count).toBe(7);
+  });
+
+  it('allows builder check-in when catch-up mode is active', async () => {
+    const res = await req('POST', '/check-in', { role: 'builder' });
+    expect(res.status).toBe(200);
+    expect(res.body.can_run).toBe(true);
+    expect(res.body.catch_up_mode).toBe(true);
+  });
+
+  it('builder progress returns catch_up_mode flag and count info', async () => {
+    state.turn = 'builder';
+
+    const res = await req('POST', '/progress', { role: 'builder' });
+    expect(res.status).toBe(200);
+    expect(res.body.catch_up_mode).toBe(true);
+    expect(res.body.progress).toBe(1);
+    expect(state.builderProgress).toBe(1);
+  });
+
+  it('builder can report progress through multiple iterations in catch-up mode', async () => {
+    state.turn = 'builder';
+
+    for (let i = 0; i < 3; i++) {
+      const res = await req('POST', '/progress', { role: 'builder' });
+      expect(res.status).toBe(200);
+      expect(res.body.catch_up_mode).toBe(true);
+      expect(res.body.progress).toBe(i + 1);
+    }
+
+    expect(state.builderProgress).toBe(3);
+  });
+
+  it('handles batch boundary in catch-up mode (builder batch complete flips turn to planner)', async () => {
+    state.turn = 'builder';
+    state.builderProgress = BATCH_SIZE - 1;
+
+    const res = await req('POST', '/progress', { role: 'builder' });
+    expect(res.status).toBe(200);
+    expect(res.body.batch_complete).toBe(true);
+    expect(res.body.catch_up_mode).toBe(true);
+    // Turn flips to planner at batch boundaries even in catch-up mode
+    expect(state.turn).toBe('planner');
+    expect(state.builderProgress).toBe(0);
+  });
+
+  it('builder progress is rejected when turn is planner in normal mode (no catch-up)', async () => {
+    state.catchUpMode = false;
+
+    const res = await req('POST', '/progress', { role: 'builder' });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('WRONG_TURN');
+  });
+
+  it('catch-up mode fields appear in health check', async () => {
+    const res = await req('GET', '/health');
+    expect(res.status).toBe(200);
+    expect(res.body.catchUpMode).toBe(true);
+    expect(res.body.ideasCount).toBe(71);
+    expect(res.body.projectsCount).toBe(7);
+    expect(res.body.completionRatio).toBeCloseTo(10.14, 1);
+  });
+
+  it('catch-up mode fields appear in state dump', async () => {
+    const res = await req('GET', '/state');
+    expect(res.status).toBe(200);
+    expect(res.body.catchUpMode).toBe(true);
+    expect(res.body.ideasCount).toBe(71);
+    expect(res.body.projectsCount).toBe(7);
+  });
+
+  it('persists catchUpMode flag to state file', () => {
+    state.catchUpMode = true;
+    persistState();
+
+    const fs = require('fs');
+    const saved = JSON.parse(fs.readFileSync('/tmp/orchestrator-state.json', 'utf-8'));
+    expect(saved.catchUpMode).toBe(true);
+    expect(saved.ideasCount).toBe(71);
+    expect(saved.projectsCount).toBe(7);
+
+    // Clean up
+    state.catchUpMode = false;
   });
 });

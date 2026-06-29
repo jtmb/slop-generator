@@ -155,15 +155,30 @@ The agent-runner handles all task orchestration in JavaScript. Cline only execut
 
 ---
 
-## Project Upload (Not Git Push)
+## Project Upload → Git Sync
 
-After tests pass, the agent-runner calls `uploadProject(slug)` which:
-1. Creates a tar.gz of the project directory
-2. POSTs it as multipart form data to `/api/v1/projects` on slop-api
+After tests pass and the project is uploaded to slop-api, the agent-runner triggers an immediate git sync:
 
-**Cline does NOT perform git operations.** The orchestrator handles all git pushes at batch boundaries.
+1. `uploadProject(slug)` — Creates a tar.gz of the project directory, POSTs as multipart to `/api/v1/projects` on slop-api
+2. `triggerGitSync()` — Calls `POST /git-sync-projects` on the orchestrator, which:
+   - Downloads the tar.gz from slop-api
+   - Extracts to `/git-repo/projects/{slug}/`
+   - Removes any nested `.git` directories left by Cline
+   - Commits and pushes to GitHub via `git push --force-with-lease`
+
+**Git sync is turn-independent** — it works regardless of whose turn it is in the orchestrator batch cycle. Each completed project is synced to GitHub immediately.
+
+**Cline does NOT perform git operations itself.** The agent-runner handles git sync via the orchestrator after the build is complete.
 
 ---
+
+## Orchestrator `/git-sync-projects` Endpoint
+
+The orchestrator exposes `POST /git-sync-projects` which calls `syncAllProjects()` directly, pulling any projects from the API that haven't yet been synced to the git repo. This bypasses the batch-turn cycle for immediate syncs.
+
+Used by:
+- `reconcileProjectsDir()` — after reconciliation completes a project upload
+- `main()` loop — after each iteration's upload succeeds
 
 ## Summary Checklist
 

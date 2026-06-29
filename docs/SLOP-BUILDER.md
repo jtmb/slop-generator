@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Slop Builder is an autonomous agent that consumes random app ideas from slop-api and builds full production applications. It uses Cline CLI with LM Studio as the AI backend, with a **JavaScript-side task manager** that orchestrates Cline calls one task at a time. Completed projects are uploaded to slop-api as tar.gz archives — git operations are handled by the orchestrator.
+The Slop Builder is an autonomous agent that consumes random app ideas from slop-api and builds full production applications. It uses Cline CLI with LM Studio as the AI backend, with a **JavaScript-side task manager** that orchestrates Cline calls one task at a time. Completed projects are uploaded to slop-api as tar.gz archives, then **immediately synced to GitHub** via the orchestrator's `/git-sync-projects` endpoint — turn-independent, no need to wait for batch boundaries.
 
 ---
 
@@ -29,6 +29,8 @@ flowchart TB
     T -->|pass| U[Phase 5: Upload<br/>tar.gz to /api/v1/projects]
     T -->|fail, retry < 3| T
     T -->|fail, exhausted| X[Write test-failures.txt]
+    U --> GS[Phase 5b: Git Sync<br/>POST /git-sync-projects<br/>to orchestrator]
+    GS -->|immediate, turn-independent| GH[(GitHub<br/>jtmb/app-ideas)]
     U --> D2[Phase 6: Update db.md]
     X --> D2
     D2 --> S
@@ -78,11 +80,13 @@ The agent-runner manages build progress in JavaScript, not inside Cline:
 - Runs tests via `spawnSync`, retries up to 3 times on failure
 - If all retries fail, writes `test-failures.txt` and moves to next iteration
 
-### Phase 5: Upload
+### Phase 5: Upload → Git Sync
 - `uploadProject(slug)` creates a tar.gz of the project directory
 - POSTs it as multipart form data to `/api/v1/projects` on slop-api
-- The orchestrator later downloads and pushes projects to git at batch boundaries
-- **Cline does NOT perform git operations**
+- **Immediately after successful upload**, calls `triggerGitSync()` which POSTs to the orchestrator's `/git-sync-projects` endpoint
+- The orchestrator downloads the archive from slop-api, extracts to `/git-repo/projects/{slug}/`, removes nested `.git` dirs, and **commits + pushes to GitHub** via `git push --force-with-lease`
+- Git sync is **turn-independent** — works regardless of whose turn it is in the batch cycle
+- **Cline does NOT perform git operations** — the agent-runner handles git sync after the build is complete
 
 ### Phase 6: Database Update
 - Updates builder's own `db.md` with project entry and status

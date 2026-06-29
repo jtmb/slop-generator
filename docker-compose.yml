@@ -115,6 +115,10 @@ services:
       - BATCH_SIZE=${BATCH_SIZE:-6}
       - LOG_LEVEL=${LOG_LEVEL:-info}
 
+      # Catch-up mode — auto-balance ideas-to-projects ratio
+      - CATCH_UP_RATIO_THRESHOLD=${CATCH_UP_RATIO_THRESHOLD:-2}
+      - CATCH_UP_TARGET_RATIO=${CATCH_UP_TARGET_RATIO:-1.9}
+
       # slop-api access for git sync (pulls ideas/projects from API)
       - API_BASE_URL=${API_BASE_URL:-https://slop-api:3443}
       - API_KEY=${API_KEY:-}
