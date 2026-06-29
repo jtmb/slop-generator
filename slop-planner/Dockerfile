@@ -21,9 +21,9 @@ COPY . .
 FROM node:22-slim AS runtime
 
 # Install runtime dependencies and Cline CLI globally
-RUN apt-get update && apt-get install -y ca-certificates tini git && \
+RUN apt-get update && apt-get install -y ca-certificates tini && \
     rm -rf /var/lib/apt/lists/* && \
-    npm install -g cline@3.0.31 --no-cache
+    npm install -g cline@3.0.29 --no-cache
 
 # Use the built-in node user (uid 1000, matches host volume permissions)
 USER node
@@ -40,6 +40,7 @@ COPY --from=builder /app/lib/ ./lib/
 COPY --from=builder /app/config/ ./config/
 COPY --from=builder /app/AGENTS.md ./AGENTS.md
 COPY --from=builder /app/db.md ./db.md
+COPY --from=builder /app/.clinerules ./clinerules
 COPY --from=builder /app/apps ./apps
 
 # Set environment variables (not in image layers - containers.instructions.md)

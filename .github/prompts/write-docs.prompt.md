@@ -1,7 +1,6 @@
 ---
 description: "Write high-quality documentation: READMEs, API docs, ADRs, and architecture decision records. Use after building features or when docs are stale."
 argument-hint: "What to document (readme, api, adr, architecture)"
-agent: "Explore"
 ---
 
 # Write Project Documentation
@@ -13,7 +12,7 @@ You are writing documentation for this project. Good docs are the difference bet
 1. Read the project's existing docs to understand tone and structure
 2. Read `docs/ARCHITECTURE.md` for structural context
 3. Run the project (if applicable) — don't document what you haven't seen work
-4. Check `.cline-rules/instructions/` for framework-specific conventions that should be referenced
+4. Check `.clinerules/instructions/` for framework-specific conventions that should be referenced
 
 ## README.md
 

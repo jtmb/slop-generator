@@ -3,8 +3,8 @@
 # =============================================================================
 FROM node:22-slim
 
-# Install runtime dependencies: tini for PID 1 signal handling
-RUN apt-get update && apt-get install -y ca-certificates tini && \
+# Install runtime dependencies: git for pushing to remote repos, tini for PID 1
+RUN apt-get update && apt-get install -y ca-certificates git tini && \
     rm -rf /var/lib/apt/lists/*
 
 # Use the built-in node user (uid 1000)

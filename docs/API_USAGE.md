@@ -57,14 +57,13 @@ If a request returns 401, discard the cached token and re-authenticate.
 
 ## Producer Pattern — slop-planner
 
-The planner pushes each generated idea after its git sync phase.
+The planner pushes each generated idea after generating it.
 
 **Flow per iteration:**
 
 ```mermaid
 flowchart LR
-    G[cline generates idea] --> S[git-sync.js --once]
-    S --> P[POST /api/v1/ideas]
+    G[cline generates idea] --> P[POST /api/v1/ideas]
     P -->|success| D[Continue loop]
     P -->|fail| W[Log warning<br/>Continue loop]
 ```
@@ -260,7 +259,7 @@ if (error.message.includes('ETIMEDOUT') || error.message.includes('ECONNREFUSED'
 }
 ```
 
-The planner treats API push failures as non-fatal — git sync has already committed the idea locally.
+The planner treats API push failures as non-fatal — the idea is still in the local `db.md` and will be retried on the next iteration.
 
 ---
 

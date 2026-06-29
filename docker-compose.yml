@@ -24,26 +24,19 @@ services:
       - CLINE_API_BASE_URL=${CLINE_API_BASE_URL:-http://192.168.0.13:1234/v1}
       - CLINE_MODEL=${CLINE_MODEL:-qwen/qwen3.5-9b}
 
-      # Git sync — pushes after each completed iteration
-      - GIT_REPO_URL=${GIT_REPO_URL:-}
-      - GIT_BRANCH=${GIT_BRANCH:-main}
-      - GIT_USER_NAME=${GIT_USER_NAME:-Slop Generator}
-      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-slop-generator@localhost}
-      - GIT_SYNC_DB=${GIT_SYNC_DB:-false}
-
       # API key for pushing ideas to slop-api
       - API_KEY=${API_KEY:-}
 
       # slop-orchestrator coordination
       - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-http://slop-orchestrator:3444}
 
-      # GitHub token for git push auth (PAT or GITHUB_TOKEN)
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-
     volumes:
       - ./slop-planner/apps:/app/apps
       - ./slop-planner/db.md:/app/db.md
       - ./slop-planner/config:/app/config:ro
+      # Persist crash-recovery and posted-idea tracking state across restarts
+      - ./slop-planner/.agent-state.json:/app/.agent-state.json
+      - ./slop-planner/.posted-slugs.json:/app/.posted-slugs.json
 
     networks:
       - slop-net
@@ -122,6 +115,23 @@ services:
       - BATCH_SIZE=${BATCH_SIZE:-6}
       - LOG_LEVEL=${LOG_LEVEL:-info}
 
+      # slop-api access for git sync (pulls ideas/projects from API)
+      - API_BASE_URL=${API_BASE_URL:-https://slop-api:3443}
+      - API_KEY=${API_KEY:-}
+
+      # Git push configuration
+      - GIT_REPO_URL=${GIT_REPO_URL:-}
+      - GIT_BRANCH=${GIT_BRANCH:-main}
+      - GIT_USER_NAME=${GIT_USER_NAME:-Slop Generator}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-slop-generator@localhost}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+
+    volumes:
+      # Persist turn/batch state across restarts
+      - ./slop-orchestrator/orchestrator-state.json:/tmp/orchestrator-state.json
+      # Orchestrator's own git working directory (NOT shared with other services)
+      - ./slop-orchestrator/git-repo:/git-repo
+
     networks:
       - slop-net
 
@@ -171,21 +181,15 @@ services:
       - CLINE_API_BASE_URL=${CLINE_API_BASE_URL:-http://192.168.0.13:1234/v1}
       - CLINE_MODEL=${CLINE_MODEL:-qwen/qwen3.5-9b}
 
-      # Git push configuration
-      - GIT_REPO_URL=${GIT_REPO_URL:-}
-      - GIT_USER_NAME=${GIT_USER_NAME:-Slop Builder}
-      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-slop-generator@localhost}
-
       # slop-orchestrator coordination
       - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-http://slop-orchestrator:3444}
-
-      # GitHub token for git push auth (PAT or GITHUB_TOKEN)
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
 
     volumes:
       - ./slop-builder/projects:/app/projects
       - ./slop-builder/db.md:/app/db.md
       - ./slop-builder/config:/app/config:ro
+      # Persist crash-recovery state across restarts
+      - ./slop-builder/.agent-state.json:/app/.agent-state.json
 
     networks:
       - slop-net

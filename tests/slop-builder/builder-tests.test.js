@@ -12,6 +12,10 @@ const mockWriteFileSync = vi.fn();
 beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
+  mockSpawnSync.mockReset();
+  mockReadFileSync.mockReset();
+  mockExistsSync.mockReset();
+  mockWriteFileSync.mockReset();
 });
 
 vi.mock('child_process', () => ({
@@ -35,7 +39,7 @@ describe('runTests', () => {
 
   it('returns false when plan.md is missing', () => {
     mockExistsSync.mockReturnValue(false);
-    expect(runTests('/tmp/proj', 'test-slug')).toBe(false);
+    expect(runTests('/tmp/proj', 'test-slug').passed).toBe(false);
   });
 
   it('extracts test command from "## Test Command" section', () => {
@@ -51,7 +55,7 @@ describe('runTests', () => {
     const callArgs = mockSpawnSync.mock.calls[0];
     expect(callArgs[0]).toBe('bash');
     expect(callArgs[1]).toContain('npm test');
-    expect(result).toBe(true);
+    expect(result.passed).toBe(true);
   });
 
   it('returns true when tests pass on first attempt', () => {
@@ -61,37 +65,39 @@ describe('runTests', () => {
     );
     mockSpawnSync.mockReturnValue({ status: 0, stdout: '3 passed', stderr: '' });
 
-    expect(runTests('/tmp/proj', 'test-slug')).toBe(true);
+    expect(runTests('/tmp/proj', 'test-slug').passed).toBe(true);
     expect(mockSpawnSync).toHaveBeenCalledTimes(1);
   });
 
-  it('retries on failure and succeeds on retry', () => {
+  it('returns false when tests fail (retry handled at caller level)', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(
       '## Test Command\n`go test ./...`\n'
     );
 
-    // First call fails, second succeeds
+    // First call fails — no retry at this level
     mockSpawnSync
       .mockReturnValueOnce({ status: 1, stdout: '', stderr: 'FAIL' })
       .mockReturnValueOnce({ status: 0, stdout: 'ok', stderr: '' });
 
-    expect(runTests('/tmp/proj', 'test-slug')).toBe(true);
-    expect(mockSpawnSync).toHaveBeenCalledTimes(2);
+    expect(runTests('/tmp/proj', 'test-slug').passed).toBe(false);
+    // Only one call — retry is handled by caller
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
   });
 
-  it('returns false after exhausting all retries', () => {
+  it('returns false with reason on test failure', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(
       '## Test Command\n`npm test`\n'
     );
 
-    // All retries fail
+    // Test fails
     mockSpawnSync.mockReturnValue({ status: 1, stdout: '', stderr: 'FAIL' });
 
-    expect(runTests('/tmp/proj', 'test-slug')).toBe(false);
-    // Default max_test_retries should be > 1
-    expect(mockSpawnSync.mock.calls.length).toBeGreaterThan(1);
+    const result = runTests('/tmp/proj', 'test-slug');
+    expect(result.passed).toBe(false);
+    expect(result.reason).toBe('exit code 1');
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to finding any backtick command near "test"', () => {
@@ -101,7 +107,7 @@ describe('runTests', () => {
     );
     mockSpawnSync.mockReturnValue({ status: 0, stdout: 'passed', stderr: '' });
 
-    expect(runTests('/tmp/proj', 'test-slug')).toBe(true);
+    expect(runTests('/tmp/proj', 'test-slug').passed).toBe(true);
     const callArgs = mockSpawnSync.mock.calls[0];
     expect(callArgs[1]).toContain('yarn test --coverage');
   });
@@ -112,7 +118,9 @@ describe('runTests', () => {
       'A plan with no test command anywhere.\nJust prose.\n'
     );
 
-    expect(runTests('/tmp/proj', 'test-slug')).toBe(false);
+    const result = runTests('/tmp/proj', 'test-slug');
+    expect(result.passed).toBe(false);
+    expect(result.reason).toBe('no test command defined');
     expect(mockSpawnSync).not.toHaveBeenCalled();
   });
 });

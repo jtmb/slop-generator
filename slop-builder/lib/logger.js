@@ -8,6 +8,8 @@ import pino from 'pino';
 const logger = pino({
   name: 'slop-builder',
   level: process.env.LOG_LEVEL || 'info',
+  // sync: true — logs flush immediately before spawnSync blocks the event loop.
+  sync: true,
   formatters: {
     level(label) {
       return { level: label };

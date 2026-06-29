@@ -154,6 +154,30 @@ The orchestrator writes its state to `/tmp/orchestrator-state.json` on every sta
 
 See [CONTAINER-INTERACTIONS.md](./CONTAINER-INTERACTIONS.md) for the self-healing architecture across all services.
 
+## Git Push
+
+The orchestrator owns all git operations via `scripts/git-push.js`. At batch boundaries (when `/progress` returns `batch_complete: true`), the orchestrator syncs all content from slop-api to a single `main` branch on GitHub.
+
+### Sync Flow
+
+1. **`ensureGitRepo()`** — initializes `/git-repo`, configures user/email, sets remote with GITHUB_TOKEN injection
+2. **`syncApps()`** — downloads all ideas from `GET /api/v1/ideas` and `GET /api/v1/ideas/:slug/raw`, writes to `apps/{slug}.md`
+3. **`syncProject()`** — downloads project tar.gz from `GET /api/v1/projects/:slug/download`, extracts to `projects/{slug}/`
+4. **`commitAndPush()`** — stages `apps/` and `projects/`, commits with timestamped message, force-pushes to `main`
+
+### Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `GIT_REPO_URL` | — | Remote URL (token injected from GITHUB_TOKEN) |
+| `GITHUB_TOKEN` | — | GitHub PAT |
+| `GIT_USER_NAME` | `Slop Generator` | Commit author |
+| `GIT_USER_EMAIL` | `slop-generator@localhost` | Commit author email |
+
+See [GIT_OPS.md](./GIT_OPS.md) for the full git strategy and working directory structure.
+
+---
+
 ## Configuration
 
 | Variable | Default | Purpose |

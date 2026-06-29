@@ -26,7 +26,9 @@ graph TB
     B --- D4[(projects/ + db.md)]
 ```
 
-**Each service owns its own data.** No shared volumes between containers.
+**Each service owns its own data.** No shared data volumes between containers.
+
+**State persistence**: Agent state files (`.agent-state.json`, `.posted-slugs.json`, `orchestrator-state.json`) are bind-mounted from the host to survive `docker compose down/up`. See [CONTAINER-INTERACTIONS.md](CONTAINER-INTERACTIONS.md#state-file-locations) for details.
 
 ## Service Details
 
@@ -57,7 +59,7 @@ graph TB
 - **Role**: Consumes random ideas, builds full production apps
 - **Tech**: Cline CLI + LM Studio, Node.js 22
 - **Data**: `projects/`, `db.md` (bind-mounted, independent)
-- **Workflow**: Fetch → Deep Plan → Build (phases) → Test → Git Push
+- **Workflow**: Fetch → Deep Plan → Build (JS task loop) → Test → Upload
 - **Ports**: None (worker, not a server)
 - **Heavy packages**: None — only axios + dotenv
 
@@ -73,7 +75,7 @@ flowchart LR
     O -->|can_run| B
     A -->|GET /api/v1/ideas/random| B
     B -->|build app| T[Test]
-    T -->|pass| G[Git Push<br/>build/slug branch]
+    T -->|pass| U[Upload tar.gz<br/>POST /api/v1/projects]
     T -->|fail| B
     B -->|/progress| O
     O -->|flip turn| P
@@ -98,7 +100,7 @@ Each iteration follows six phases:
 2. **Deep Planning** — cline researches best framework, writes plan.md with phases
 3. **Build** — cline executes one phase at a time from plan.md, checks off items
 4. **Test** — runs test command from plan.md, retries up to 3 times
-5. **Git Push** — pushes to `build/{slug}` orphan branch (per-project isolation)
+5. **Upload** — creates tar.gz, POSTs to `/api/v1/projects` on slop-api
 6. **Database** — updates builder's own db.md with completion status
 
 ## Orchestrator Coordination
@@ -112,7 +114,7 @@ report /progress after. When BATCH_SIZE iterations complete, the turn flips.
 ┌── /check-in ──▶ wait 30s (if blocked) ◀── loop
 │
 ├── generate idea
-├── git sync
+├── post to API
 │
 └── /progress ──▶ batch_complete? ──▶ yield
 ```
@@ -143,5 +145,5 @@ Neither slop-api nor slop-builder depends on slop-planner at runtime. The planne
 - **File-based plan handoff**: Each phase writes its output, next phase reads it
 - **Independent data per service**: No shared volumes — each service owns its data
 - **Only slop-api carries heavy packages**: express/jsonwebtoken isolated to API
-- **Per-project git branches**: `build/{slug}` orphan branches keep projects independent
+- **Orchestrator-owned git**: orchestrator pushes all artifacts to a single `main` branch
 - **Dead code cleanup**: Every refactor removes orphaned files — see `.github/instructions/cleanup-dead-code.instructions.md`

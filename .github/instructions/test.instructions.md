@@ -27,14 +27,14 @@ tests/
 │   ├── fixtures/       # Sample plan.txt, prompts
 │   ├── planner-prompt.test.js   # Prompt builder tests
 │   ├── planner-runner.test.js   # Agent runner unit + mock tests
-│   └── planner-gitsync.test.js  # Git sync tests
+│   └── planner-submit.test.js   # API submission + recovery tests
 │
 └── slop-builder/       # Builder agent tests
     ├── fixtures/       # Sample db.md, idea.json, plan.md
     ├── builder-database.test.js # Database read/write tests
     ├── builder-tests.test.js    # Test runner + retry logic tests
     ├── builder-prompt.test.js   # Prompt builder tests
-    └── builder-gitsync.test.js  # Git sync orphan branch tests
+    └── builder-recovery.test.js # Crash recovery + upload tests
 ```
 
 ## When to Write Tests

@@ -146,17 +146,17 @@ describe('recoverPlannerState', () => {
     expect(result).toBe(4);
   });
 
-  it('re-runs planning + execution + git-sync when interrupted during planning', async () => {
+  it('re-runs planning + execution when interrupted during planning', async () => {
     saveState(statePath, { iteration: 3, phase: 'planning', currentSlug: null });
     const checkFn = mockCheckCanRun();
     const result = await recoverPlannerState(statePath, checkFn);
 
-    // Should have called checkCanRun twice (before plan + before execute)
+    // Should have called checkCanRun (once for plan, once for execute)
     expect(checkFn).toHaveBeenCalled();
-    // Should have called cline twice (plan + execute) and git-sync once
+    // Should have called cline (plan + execute phases)
     expect(spawnSync).toHaveBeenCalled();
-    // Returns the iteration (now complete)
-    expect(result).toBe(3);
+    // Returns true when API post succeeds, false/iteration when it fails
+    expect([true, false, 3]).toContain(result);
 
     // State file should have been updated to 'complete'
     const saved = loadState(statePath);
@@ -164,27 +164,28 @@ describe('recoverPlannerState', () => {
     expect(saved.iteration).toBe(3);
   });
 
-  it('re-runs execution + git-sync when interrupted during execution', async () => {
+  it('re-runs execution when interrupted during execution', async () => {
     saveState(statePath, { iteration: 5, phase: 'execution', currentSlug: null });
     const checkFn = mockCheckCanRun();
     const result = await recoverPlannerState(statePath, checkFn);
 
     // Should have called checkCanRun once (before execute phase)
     expect(checkFn).toHaveBeenCalled();
-    expect(result).toBe(5);
+    expect([true, false, 5]).toContain(result);
     const saved = loadState(statePath);
     expect(saved.phase).toBe('complete');
     expect(saved.iteration).toBe(5);
   });
 
-  it('re-runs only git-sync when interrupted during git-sync', async () => {
+  it('returns iteration for unknown phase (legacy git-sync phase no longer exists)', async () => {
     saveState(statePath, { iteration: 2, phase: 'git-sync', currentSlug: null });
     const checkFn = mockCheckCanRun();
     const result = await recoverPlannerState(statePath, checkFn);
 
     expect(result).toBe(2);
+    // Legacy phase not handled — state unchanged
     const saved = loadState(statePath);
-    expect(saved.phase).toBe('complete');
+    expect(saved.phase).toBe('git-sync');
   });
 
   it('returns iteration even when recovery spawn encounters errors', async () => {

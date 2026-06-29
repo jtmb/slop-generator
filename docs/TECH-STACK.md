@@ -14,13 +14,13 @@ graph TB
     end
 
     subgraph Planner[slop-planner]
-        C1[Cline CLI 3.0.31]
+        C1[Cline CLI 3.0.29]
         A1[Axios 1.6]
         P1[Pino 9.5]
     end
 
     subgraph Builder[slop-builder]
-        C2[Cline CLI 3.0.31]
+        C2[Cline CLI 3.0.29]
         A2[Axios 1.6]
         P2[Pino 9.5]
     end
@@ -45,7 +45,7 @@ graph TB
 | Runtime | Node.js 22 | Node.js 22 | Node.js 22 | Node.js 22 |
 | Base Image | node:22-slim | node:22-slim | node:22-slim | node:22-slim |
 | Init | tini | tini | tini | tini |
-| AI Orchestration | Cline CLI 3.0.31 | — | Cline CLI 3.0.31 | — |
+| AI Orchestration | Cline CLI 3.0.29 | — | Cline CLI 3.0.29 | — |
 | Web Framework | — | Express 4.21 | — | Express 4.21 |
 | Auth | — | JWT (HS256) | — | — |
 | TLS | — | openssl self-signed | — | — |
@@ -80,7 +80,7 @@ graph TB
 
 Both use Cline CLI for AI-driven agent workflows:
 
-- **CLI**: cline@3.0.31 (npm global install, bundled with Bun)
+- **CLI**: cline@3.0.29 (npm global install) — v3.0.31 breaks run_commands (posix_spawn ENOENT)
 - **Config**: `~/.cline/data/settings/providers.json` written by agent-runner.js
 - **Invocation**: `spawnSync('cline', ['-P', 'lmstudio', prompt])` — avoids shell quoting
 - **Container**: Multi-stage build (builder + runtime), non-root user (uid 1000)

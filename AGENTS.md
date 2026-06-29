@@ -30,7 +30,7 @@ This is a monorepo containing autonomous AI agents that generate software projec
 │   ├── Dockerfile      # Containerized Cline CLI + LM Studio
 │   ├── projects/       # Built project directories (per slug)
 │   ├── db.md           # Builder's own project tracker
-│   ├── scripts/        # agent-runner.js, git-sync.js
+│   ├── scripts/        # agent-runner.js (JS task mgmt, upload)
 │   └── config/         # Environment and settings
 │
 ├── slop-orchestrator/  # Load controller — coordinates turn-based batch execution
@@ -85,7 +85,7 @@ slop-planner ──POST /api/v1/ideas──▶ slop-api
 slop-builder ◀──GET /api/v1/ideas/random──┘
        │
        ▼
-  builds app → tests → git push (build/{slug} branch)
+  builds app → tests → upload tar.gz
 
 slop-orchestrator ◀─▶ /check-in, /progress (planner + builder)
 ```

@@ -89,7 +89,7 @@ flowchart TB
     F --> P[Plan]
     P --> B[Build]
     B --> T[Test]
-    T -->|pass| G[Git Push]
+    T -->|pass| G[Upload]
     T -->|fail, retry < 3| B
     T -->|fail, exhausted| D[Mark Failed]
     G --> U[Update DB]

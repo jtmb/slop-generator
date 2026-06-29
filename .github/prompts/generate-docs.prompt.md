@@ -1,7 +1,6 @@
 ---
 description: "Scan the codebase and populate docs/ templates (ARCHITECTURE.md, TECH-STACK.md, CONVENTIONS.md). Use after project scaffolding or when docs are stale."
 argument-hint: "Which docs to generate (all, architecture, tech-stack, conventions)"
-agent: "Explore"
 ---
 
 # Generate Project Documentation

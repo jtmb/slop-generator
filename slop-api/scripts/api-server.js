@@ -14,12 +14,13 @@
  */
 
 import { createServer } from 'https';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, createReadStream } from 'fs';
 import { spawnSync } from 'child_process';
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import path from 'path';
+import multer from 'multer';
 import { fileURLToPath } from 'url';
 import logger from '../lib/logger.js';
 
@@ -39,6 +40,8 @@ const JWT_EXPIRY = process.env.JWT_EXPIRY || '1h';
 const DATA_DIR = path.join(APP_ROOT, 'data');
 const DB_PATH = path.join(DATA_DIR, 'db.md');
 const APPS_DIR = path.join(DATA_DIR, 'apps');
+const PROJECTS_DIR = path.join(DATA_DIR, 'projects');
+const PROJECTS_DB_PATH = path.join(DATA_DIR, 'projects-db.md');
 
 const CERTS_DIR = '/tmp/api-certs';
 const CERT_PATH = path.join(CERTS_DIR, 'cert.pem');
@@ -390,6 +393,97 @@ function appendToDatabase(idea) {
 }
 
 // ---------------------------------------------------------------------------
+// Project storage (for builder-completed projects)
+// ---------------------------------------------------------------------------
+
+/**
+ * Multer instance for project uploads (tar.gz archives).
+ * Stores to memory; written to disk by the route handler.
+ */
+const projectUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB max
+});
+
+/**
+ * Parse all project entries from projects-db.md into structured objects.
+ * Each entry: slug, name, status, dateCompleted.
+ */
+function parseProjectsDb() {
+  if (!existsSync(PROJECTS_DB_PATH)) return [];
+
+  let content;
+  try {
+    content = readFileSync(PROJECTS_DB_PATH, 'utf-8');
+  } catch (err) {
+    logger.error({ err, path: PROJECTS_DB_PATH }, 'Failed to read projects database');
+    return [];
+  }
+
+  const entries = [];
+  const entryRegex = /## Project #(\d+): (.+)\n- \*\*Slug\*\*: `(.+?)`\n- \*\*Status\*\*: (.+)\n- \*\*Date Completed\*\*: (.+)/g;
+
+  let match;
+  while ((match = entryRegex.exec(content)) !== null) {
+    entries.push({
+      id: parseInt(match[1], 10),
+      name: match[2].trim(),
+      slug: match[3].trim(),
+      status: match[4].trim(),
+      dateCompleted: match[5].trim(),
+    });
+  }
+
+  return entries;
+}
+
+/**
+ * Append a completed project entry to the projects-db.md registry.
+ */
+function appendProjectToDb(project) {
+  mkdirSync(DATA_DIR, { recursive: true });
+
+  const existing = parseProjectsDb();
+  const nextId = existing.length > 0
+    ? Math.max(...existing.map(e => e.id)) + 1
+    : 1;
+
+  const date = project.dateCompleted || new Date().toISOString().split('T')[0];
+
+  const entry = [
+    '',
+    `## Project #${nextId}: ${project.name}`,
+    `- **Slug**: \`${project.slug}\``,
+    `- **Status**: ${project.status}`,
+    `- **Date Completed**: ${date}`,
+    '',
+  ].join('\n');
+
+  if (existsSync(PROJECTS_DB_PATH)) {
+    let dbContent = readFileSync(PROJECTS_DB_PATH, 'utf-8');
+    dbContent = dbContent.replace(
+      /## Total Projects Built: \d+/,
+      `## Total Projects Built: ${nextId}`
+    );
+    dbContent = dbContent.replace(
+      /\*Last Updated: .+\*/,
+      `*Last Updated: ${date}*`
+    );
+    dbContent += entry;
+    writeFileSync(PROJECTS_DB_PATH, dbContent);
+  } else {
+    const header = [
+      '# Project Database',
+      `*Last Updated: ${date}*`,
+      '',
+      `## Total Projects Built: ${nextId}`,
+      '',
+    ].join('\n');
+    writeFileSync(PROJECTS_DB_PATH, header + entry);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Express app setup
 // ---------------------------------------------------------------------------
 
@@ -562,6 +656,159 @@ app.post('/api/v1/ideas', authMiddleware, (req, res) => {
     .json({ slug, name: idea.name, status: 'created' });
 });
 
+/**
+ * GET /api/v1/ideas/:slug/raw — Return the raw markdown content of an idea.
+ * Used by the orchestrator to write idea files into the git repo.
+ */
+app.get('/api/v1/ideas/:slug/raw', authMiddleware, (req, res) => {
+  const { slug } = req.params;
+  const filePath = path.join(APPS_DIR, `${slug}.md`);
+
+  if (!existsSync(filePath)) {
+    return res.status(404).json({
+      error: { code: 'NOT_FOUND', message: `No idea found with slug "${slug}"` },
+    });
+  }
+
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+    res.set('Content-Type', 'text/plain; charset=utf-8');
+    res.send(content);
+  } catch (err) {
+    logger.error({ err, slug }, 'Failed to read idea file for raw endpoint');
+    res.status(500).json({
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to read idea file' },
+    });
+  }
+});
+
+/**
+ * POST /api/v1/projects — Ingest a completed project (tar.gz archive) from builder.
+ *
+ * Multipart/form-data: slug (text), name (text), status (text), project (file).
+ * Idempotent: returns 409 Conflict if slug already exists with same status.
+ * Returns 201 Created with project metadata on success.
+ */
+app.post('/api/v1/projects', authMiddleware, projectUpload.single('project'), (req, res) => {
+  const { slug, name, status } = req.body;
+  const file = req.file;
+
+  if (!slug) {
+    return res.status(400).json({
+      error: { code: 'VALIDATION_ERROR', message: 'slug field is required' },
+    });
+  }
+  if (!name) {
+    return res.status(400).json({
+      error: { code: 'VALIDATION_ERROR', message: 'name field is required' },
+    });
+  }
+  if (!file) {
+    return res.status(400).json({
+      error: { code: 'VALIDATION_ERROR', message: 'project file is required' },
+    });
+  }
+
+  // Sanitize slug
+  const cleanSlug = slug
+    .toLowerCase()
+    .replace(/[\s_]+/g, '-')
+    .replace(/[^a-z0-9-]/g, '');
+
+  // Idempotency check — project already uploaded?
+  const existing = parseProjectsDb().find(p => p.slug === cleanSlug);
+  if (existing) {
+    return res.status(409).json({
+      error: { code: 'CONFLICT', message: `Project with slug "${cleanSlug}" already exists` },
+      existing: { slug: existing.slug, name: existing.name, status: existing.status },
+    });
+  }
+
+  // Write the tar.gz file to disk
+  mkdirSync(PROJECTS_DIR, { recursive: true });
+  const tmpPath = path.join(PROJECTS_DIR, `${cleanSlug}.tar.gz.tmp`);
+  const finalPath = path.join(PROJECTS_DIR, `${cleanSlug}.tar.gz`);
+
+  try {
+    writeFileSync(tmpPath, file.buffer);
+    renameSync(tmpPath, finalPath);
+  } catch (err) {
+    logger.error({ err, slug: cleanSlug }, 'Failed to write project archive');
+    return res.status(500).json({
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to save project archive' },
+    });
+  }
+
+  // Update project registry
+  const projectStatus = status || 'Complete';
+  appendProjectToDb({ slug: cleanSlug, name, status: projectStatus });
+
+  logger.info({ slug: cleanSlug, name, size: file.size }, 'Ingested new project');
+
+  res.status(201)
+    .set('Location', `/api/v1/projects/${cleanSlug}`)
+    .json({ slug: cleanSlug, name, status: projectStatus, size: file.size });
+});
+
+/**
+ * GET /api/v1/projects — List all completed projects from the project registry.
+ */
+app.get('/api/v1/projects', authMiddleware, (_req, res) => {
+  const projects = parseProjectsDb();
+  res.json({ count: projects.length, projects });
+});
+
+/**
+ * GET /api/v1/projects/:slug — Get metadata for a single project.
+ */
+app.get('/api/v1/projects/:slug', authMiddleware, (req, res) => {
+  const { slug } = req.params;
+  const projects = parseProjectsDb();
+  const project = projects.find(p => p.slug === slug);
+
+  if (!project) {
+    return res.status(404).json({
+      error: { code: 'NOT_FOUND', message: `No project found with slug "${slug}"` },
+    });
+  }
+
+  const archivePath = path.join(PROJECTS_DIR, `${slug}.tar.gz`);
+  const size = existsSync(archivePath)
+    ? readFileSync(archivePath).length
+    : 0;
+
+  res.json({ ...project, size });
+});
+
+/**
+ * GET /api/v1/projects/:slug/download — Stream the project tar.gz archive.
+ * Used by the orchestrator to pull project files for git push.
+ */
+app.get('/api/v1/projects/:slug/download', authMiddleware, (req, res) => {
+  const { slug } = req.params;
+  const archivePath = path.join(PROJECTS_DIR, `${slug}.tar.gz`);
+
+  if (!existsSync(archivePath)) {
+    return res.status(404).json({
+      error: { code: 'NOT_FOUND', message: `No project archive found for slug "${slug}"` },
+    });
+  }
+
+  res.set('Content-Type', 'application/gzip');
+  res.set('Content-Disposition', `attachment; filename="${slug}.tar.gz"`);
+
+  const stream = createReadStream(archivePath);
+  stream.on('error', (err) => {
+    logger.error({ err, slug }, 'Failed to stream project archive');
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: { code: 'INTERNAL_ERROR', message: 'Failed to stream project archive' },
+      });
+    }
+  });
+  stream.pipe(res);
+});
+
 // ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
@@ -583,6 +830,7 @@ if (isMainModule) {
 
   // Ensure data directories exist
   mkdirSync(APPS_DIR, { recursive: true });
+  mkdirSync(PROJECTS_DIR, { recursive: true });
 
   // Ensure TLS certificates exist, then start the server
   const { cert, key } = ensureCertificates();
@@ -596,4 +844,4 @@ if (isMainModule) {
   process.on('SIGINT', () => server.close(() => process.exit(0)));
 }
 
-export { app, parseDatabase, parseAppFile, parseBulletList, parseKeyFeatures, parseStrategyList, parseTechStack, parseProgressChecklist, writeAppFile, appendToDatabase, authMiddleware };
+export { app, parseDatabase, parseAppFile, parseBulletList, parseKeyFeatures, parseStrategyList, parseTechStack, parseProgressChecklist, writeAppFile, appendToDatabase, parseProjectsDb, appendProjectToDb, authMiddleware };

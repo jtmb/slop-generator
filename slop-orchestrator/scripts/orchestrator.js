@@ -14,14 +14,16 @@
 
 import express from 'express';
 import dotenv from 'dotenv';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'fs';
 import logger from '../lib/logger.js';
+import { ensureGitRepo, syncApps, syncAllProjects } from './git-push.js';
 
 dotenv.config();
 
 const PORT = parseInt(process.env.ORCHESTRATOR_PORT || '3444', 10);
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || '6', 10);
 const STATE_FILE = '/tmp/orchestrator-state.json';
+const GIT_REPO_URL = process.env.GIT_REPO_URL || '';
 
 // In-memory state — resets to PLANNER_TURN on restart unless persisted
 const state = {
@@ -66,7 +68,22 @@ function persistState() {
       builderProgress: state.builderProgress,
       lastUpdated: new Date().toISOString(),
     }, null, 2), 'utf-8');
-    renameSync(tmpPath, STATE_FILE);
+    try {
+      renameSync(tmpPath, STATE_FILE);
+    } catch (renameErr) {
+      // Atomic rename can fail with EBUSY/EPERM on Docker volume bind mounts.
+      if (renameErr.code === 'EBUSY' || renameErr.code === 'EPERM') {
+        writeFileSync(STATE_FILE, JSON.stringify({
+          turn: state.turn,
+          plannerProgress: state.plannerProgress,
+          builderProgress: state.builderProgress,
+          lastUpdated: new Date().toISOString(),
+        }, null, 2), 'utf-8');
+        try { unlinkSync(tmpPath); } catch (_) { /* ignore */ }
+      } else {
+        throw renameErr;
+      }
+    }
   } catch (err) {
     logger.warn({ err }, 'Failed to persist orchestrator state');
   }
@@ -188,6 +205,17 @@ app.post('/progress', (req, res) => {
 
     persistState();
     logger.info({ previousTurn, newTurn: state.turn, batchSize: BATCH_SIZE }, 'Batch complete — turn flipped');
+
+    // Fire-and-forget git sync — don't block the HTTP response
+    if (GIT_REPO_URL) {
+      if (previousTurn === 'planner') {
+        // Planner batch done — sync new ideas to git
+        syncApps().catch(err => logger.warn({ err }, 'Post-planner git sync failed'));
+      } else {
+        // Builder batch done — sync new projects to git
+        syncAllProjects().catch(err => logger.warn({ err }, 'Post-builder git sync failed'));
+      }
+    }
   } else {
     persistState();
     logger.info({ role, progress, batchSize: BATCH_SIZE }, 'Progress reported');
@@ -213,6 +241,18 @@ const isMainModule = process.argv[1] && (
 
 if (isMainModule) {
   restoreState();
+
+  // Initialize git repo for push (only if GIT_REPO_URL is configured)
+  if (GIT_REPO_URL) {
+    ensureGitRepo();
+    // Initial sync of existing apps (fire-and-forget)
+    syncApps().then(count => {
+      logger.info({ count }, 'Initial git sync complete');
+    }).catch(err => {
+      logger.warn({ err }, 'Initial git sync failed');
+    });
+  }
+
   logger.info({ port: PORT, batchSize: BATCH_SIZE, initialTurn: state.turn }, 'Orchestrator starting');
 
   const server = app.listen(PORT, () => {
@@ -224,4 +264,4 @@ if (isMainModule) {
 }
 
 // Export app and state for tests
-export { app, state, BATCH_SIZE, restoreState, persistState };
+export { app, state, BATCH_SIZE, restoreState, persistState, GIT_REPO_URL };

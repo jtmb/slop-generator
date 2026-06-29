@@ -19,7 +19,8 @@ flowchart LR
     A -->|GET /api/v1/ideas/random| B[slop-builder<br/>App Builder]
     P <-->|/check-in /progress| O[slop-orchestrator<br/>:3444 Load Controller]
     B <-->|/check-in /progress| O
-    B -->|git push| GH[GitHub<br/>build/slug branch]
+    B -->|POST /api/v1/projects<br/>upload tar.gz| A
+    O -->|git push<br/>main branch| GH[GitHub]
 ```
 
 | Service | Role | Port | Key Tech |
@@ -71,14 +72,14 @@ curl http://localhost:3444/health
 ### Planner — 3-Phase Idea Loop
 
 ```
-check-in → generate idea → git sync → report progress → repeat
+check-in → generate idea → post to API → report progress → repeat
 ```
 
 The planner runs an autonomous agent loop with full crash recovery. Each iteration:
 
 1. **Check-in** with orchestrator for turn permission
 2. **Generate** a unique app concept via Cline CLI (reads `AGENTS.md` + `db.md`)
-3. **Git sync** — commit and push `apps/*.md` to `main` branch
+3. **Post to API** — upload idea to slop-api via POST /api/v1/ideas
 4. **Report progress** — triggers turn flip after `BATCH_SIZE` iterations
 
 State checkpoints at every phase boundary — resumes mid-iteration on restart.
@@ -86,14 +87,14 @@ State checkpoints at every phase boundary — resumes mid-iteration on restart.
 ### Builder — 6-Phase Build Pipeline
 
 ```
-check-in → fetch idea → deep plan → build → test → git push → repeat
+check-in → fetch idea → deep plan → build → test → upload → repeat
 ```
 
 1. **Fetch** random idea from slop-api (deduplicates via own `db.md`)
 2. **Deep Planning** — Cline researches best framework, writes `plan.md`
-3. **Build** — executes one phase at a time, checks off items
+3. **Build** — JS agent-runner parses plan.md checkboxes, calls Cline for one task at a time
 4. **Test** — runs test command, retries up to 3 times
-5. **Git Push** — pushes to `build/{slug}` orphan branch (per-project isolation)
+5. **Upload** — creates tar.gz, POSTs to `/api/v1/projects` on slop-api
 6. **Database** — marks complete or failed in builder's `db.md`
 
 ### Orchestrator — Turn-Based Coordinator
@@ -119,7 +120,7 @@ Workers poll `/check-in` before each iteration. When blocked, they sleep and ret
 | `API_KEY` | — | Shared secret for JWT token exchange |
 | `CLINE_API_BASE_URL` | `http://192.168.0.13:1234/v1` | LM Studio endpoint |
 | `CLINE_MODEL` | `qwen/qwen3.5-9b` | Model identifier |
-| `GIT_REPO_URL` | — | Remote for git pushes (planner → `main`, builder → `build/{slug}`) |
+| `GIT_REPO_URL` | — | Remote for git pushes (orchestrator → `main` branch only) |
 | `GITHUB_TOKEN` | — | GitHub PAT for push auth (embedded as `x-access-token` in remote URL) |
 | `BATCH_SIZE` | 6 | Iterations before turn flip |
 | `ORCHESTRATOR_URL` | `http://slop-orchestrator:3444` | Coordination endpoint |
@@ -137,7 +138,7 @@ slop-generator/
 │   ├── Dockerfile          # Multi-stage: cline-cli + node:22-slim
 │   ├── db.md               # Planner's idea registry
 │   ├── apps/               # Generated idea .md files
-│   ├── scripts/            # agent-runner.js, git-sync.js
+│   ├── scripts/            # agent-runner.js
 │   └── config/             # .env, settings.json
 │
 ├── slop-api/               # REST API microservice
@@ -152,7 +153,7 @@ slop-generator/
 │   ├── Dockerfile          # Multi-stage: cline-cli + node:22-slim
 │   ├── db.md               # Builder's project registry
 │   ├── projects/           # Built applications (per slug)
-│   ├── scripts/            # agent-runner.js, git-sync.js
+│   ├── scripts/            # agent-runner.js (JS task mgmt, upload)
 │   └── config/             # .env, settings.json
 │
 ├── slop-orchestrator/      # Load controller
@@ -201,7 +202,7 @@ cd tests/slop-orchestrator && npx vitest run   # 17 tests
 | [SLOP-PLANNER.md](./docs/SLOP-PLANNER.md) | Planner agent loop, phases, configuration |
 | [SLOP-BUILDER.md](./docs/SLOP-BUILDER.md) | Builder pipeline, phases, reconciliation |
 | [SLOP-ORCHESTRATOR.md](./docs/SLOP-ORCHESTRATOR.md) | Turn-based coordination, state machine, state persistence |
-| [GIT_OPS.md](./docs/GIT_OPS.md) | Git strategies, per-project orphan branches, `.gitignore` patterns |
+| [GIT_OPS.md](./docs/GIT_OPS.md) | Orchestrator-owned single-branch git, push flow, `.gitignore` patterns |
 | [TESTING.md](./docs/TESTING.md) | Test structure, patterns, mocking conventions |
 
 All docs include Mermaid diagrams for architecture, data flow, lifecycles, and state machines.
@@ -213,6 +214,6 @@ All docs include Mermaid diagrams for architecture, data flow, lifecycles, and s
 - **No shared volumes** — Each service owns its data independently
 - **API as single source of truth** — Planner pushes to API, builder reads from API
 - **Only API carries heavy packages** — Express/JWT isolated to slop-api and orchestrator
-- **Per-project git isolation** — `build/{slug}` orphan branches keep projects independent
+- **Orchestrator-owned git** — orchestrator pushes all artifacts to a single `main` branch
 - **Crash recovery everywhere** — JSON state files, phase checkpoints, directory reconciliation
 - **Turn-based coordination** — One LLM consumer at a time, enforced by orchestrator

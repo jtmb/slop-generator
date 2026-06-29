@@ -22,8 +22,7 @@ graph TB
     B <-->|"/check-in, /progress<br/>(HTTP, internal)"| O
     P -->|"cline CLI → /v1/chat/completions"| LM
     B -->|"cline CLI → /v1/chat/completions"| LM
-    P -->|"git push (branch: planner)"| GH
-    B -->|"git push (branch: build/slug)"| GH
+    O -->|"git push (main branch)"| GH
 ```
 
 **Key**: Solid arrows = HTTP requests. Dotted = coordination. No shared volumes. Each service owns its data.
@@ -41,9 +40,9 @@ flowchart TD
     RECOVER -->|No| ITER[iteration = 0]
 
     CHK_PHASE -->|complete| RESUME[Resume from iteration+1]
-    CHK_PHASE -->|planning| R_PLAN[Re-run: Planning → Execution → Git Sync]
-    CHK_PHASE -->|execution| R_EXEC[Re-run: Execution → Git Sync]
-    CHK_PHASE -->|git-sync| R_GIT[Re-run: Git Sync]
+    CHK_PHASE -->|planning| R_PLAN[Re-run: Planning → Execution → API Post]
+    CHK_PHASE -->|execution| R_EXEC[Re-run: Execution → API Post]
+    CHK_PHASE -->|api-post| R_GIT[Re-run: API Post]
 
     R_PLAN --> DONE
     R_EXEC --> DONE
@@ -59,9 +58,9 @@ flowchart TD
     SAVE_PLAN --> PLAN["Phase 1: Planning<br/>cline buildPlanPrompt()"]
     PLAN --> SAVE_EXEC["Save state: execution"]
     SAVE_EXEC --> EXEC["Phase 2: Execution<br/>cline buildAgentPrompt()"]
-    EXEC --> SAVE_GIT["Save state: git-sync"]
-    SAVE_GIT --> GIT["Phase 3: Git Sync<br/>git-sync.js --once"]
-    GIT --> SAVE_DONE["Save state: complete"]
+    EXEC --> SAVE_POST["Save state: api-post"]
+    SAVE_POST --> POST["Phase 3: Post to API<br/>POST /api/v1/ideas"]
+    POST --> SAVE_DONE["Save state: complete"]
     SAVE_DONE --> ORCH_PROG["POST /progress<br/>role: planner"]
     ORCH_PROG -->|batch_complete| YIELD[Yield to builder]
     ORCH_PROG -->|not yet| LOOP
@@ -129,7 +128,7 @@ flowchart TD
     SAVE_DONE --> ORCH_PROG["POST /progress"]
     
     TEST -->|pass| SAVE_PUSH["Save state: git-push"]
-    SAVE_PUSH --> PUSH["Phase 5: Git Push<br/>git-sync.js --slug"]
+    SAVE_PUSH --> PUSH["Phase 5: Upload<br/>tar.gz to /api/v1/projects"]
     PUSH --> SAVE_DB["Save state: db-update"]
 
     SAVE_DB --> DB["Phase 6: Update DB<br/>updateDatabase(Complete)"]
@@ -223,7 +222,7 @@ sequenceDiagram
     Note over P: Restart
     P->>FS: loadState() → { iteration:5, phase:execution }
     P->>P: Re-run: Execution phase
-    P->>P: Re-run: Git Sync phase
+    P->>P: Re-run: API Post phase
     P->>FS: Save state: { iteration:5, phase:complete }
     P->>O: POST /progress (iteration 5)
 
@@ -237,7 +236,7 @@ sequenceDiagram
     B->>FS: Read plan.md → 2 unchecked items
     B->>B: Resume build: execute phases 2×
     B->>B: Run tests → pass
-    B->>B: Git push
+    B->>A: POST /api/v1/projects (upload tar.gz)
     B->>FS: updateDatabase(my-app, Complete)
     B->>FS: loadState() → { iteration:3, phase:building }
     B->>O: POST /progress (iteration 3)
@@ -347,7 +346,7 @@ On every startup, `slop-builder` scans `/app/projects/` and handles each directo
 |-------|--------|
 | Dir with no `plan.md` | **Delete** — orphan leftover from crash before planning |
 | `plan.md` has unchecked `- [ ]` items | **Resume build** — execute remaining phases (up to 10 iterations) |
-| `plan.md` fully checked, no db entry | **Run tests** → **Git push** → **updateDatabase** |
+| `plan.md` fully checked, no db entry | **Run tests** → **Upload** → **updateDatabase** |
 | Dir with db entry already | **Skip** — already tracked |
 
 This guarantees no project is left in a half-built state across restarts.
@@ -358,8 +357,60 @@ This guarantees no project is left in a half-built state across restarts.
 
 | Container | File | Content |
 |-----------|------|---------|
-| slop-planner | `/app/.agent-state.json` | `{ iteration, phase (planning\|execution\|git-sync\|complete), currentSlug, lastUpdated }` |
+| slop-planner | `/app/.agent-state.json` | `{ iteration, phase (planning\|execution\|api-post\|complete), currentSlug, lastUpdated }` |
+| slop-planner | `/app/.posted-slugs.json` | `["slug1", "slug2", ...]` — tracks which ideas have been POSTed to slop-api for idempotent re-posting |
 | slop-builder | `/app/.agent-state.json` | `{ iteration, phase (fetch\|planning\|building\|testing\|git-push\|db-update\|complete), currentSlug, lastUpdated }` |
 | slop-orchestrator | `/tmp/orchestrator-state.json` | `{ turn, plannerProgress, builderProgress, lastUpdated }` |
 
-All files use atomic write (tmp + rename) to prevent corruption on crash mid-write.
+All files are bind-mounted from the host via `docker-compose.yml` to survive `docker compose down/up`:
+```yaml
+volumes:
+  - ./slop-planner/.agent-state.json:/app/.agent-state.json
+  - ./slop-planner/.posted-slugs.json:/app/.posted-slugs.json
+  - ./slop-builder/.agent-state.json:/app/.agent-state.json
+  - ./slop-orchestrator/orchestrator-state.json:/tmp/orchestrator-state.json
+```
+
+### EBUSY/EPERM Fallback
+
+Docker bind-mount files cannot be atomically renamed (`renameSync` throws `EBUSY` or `EPERM`). All three services use a fallback: try rename first, catch `EBUSY`/`EPERM`, fall back to `writeFileSync` + `unlinkSync(tmp)`:
+
+```js
+// lib/agent-state.js — EBUSY/EPERM fallback pattern
+function saveState(settings, state) {
+  const tmp = STATE_FILE + '.tmp';
+  writeFileSync(tmp, JSON.stringify({ ...state, lastUpdated: new Date().toISOString() }));
+  try {
+    renameSync(tmp, STATE_FILE);
+  } catch (e) {
+    if (e.code === 'EBUSY' || e.code === 'EPERM') {
+      writeFileSync(STATE_FILE, readFileSync(tmp));
+      unlinkSync(tmp);
+    } else {
+      throw e;
+    }
+  }
+}
+```
+
+This pattern is identical across slop-planner, slop-builder, and slop-orchestrator.
+
+## JWT Token Lifecycle
+
+```mermaid
+flowchart TD
+    AUTH[POST /api/v1/auth/token] --> CACHE[Cache jwtToken in memory]
+    CALL[API call with Bearer token] --> OK{Response?}
+    OK -->|200| RETURN[Return data]
+    OK -->|401 TOKEN_EXPIRED| CLEAR[Clear cached jwtToken]
+    CLEAR --> REAUTH[Re-authenticate]
+    REAUTH --> RETRY[Retry API call once]
+    RETRY --> RETURN
+    OK -->|403| CLEAR
+```
+
+Both planner and builder cache the JWT in memory. On 401/403:
+- Planner's `postIdeasToApi()` clears `jwtToken = null` and breaks the batch (re-auth on next cycle)
+- Builder's `fetchRandomIdea()` clears `jwtToken = null`, re-authenticates, and retries the GET immediately
+
+This prevents infinite 401 loops when the token expires (1-hour JWT TTL).

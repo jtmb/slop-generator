@@ -12,19 +12,17 @@ graph TB
         RT[routes.test.js<br/>18 tests<br/>supertest]
     end
 
-    subgraph slop-planner[slop-planner Tests — 34 tests]
+    subgraph slop-planner[slop-planner Tests — 29 tests]
         PP[planner-prompt.test.js<br/>8 tests]
         PR[planner-runner.test.js<br/>7 tests]
-        PG[planner-gitsync.test.js<br/>5 tests]
         PRE[planner-recovery.test.js<br/>14 tests]
     end
 
-    subgraph slop-builder[slop-builder Tests — 42 tests]
+    subgraph slop-builder[slop-builder Tests — 57 tests]
         BD[builder-database.test.js<br/>9 tests]
         BT[builder-tests.test.js<br/>7 tests]
-        BP[builder-prompt.test.js<br/>12 tests]
-        BG[builder-gitsync.test.js<br/>1 test]
-        BRE[builder-recovery.test.js<br/>12 tests]
+        BP[builder-prompt.test.js<br/>28 tests]
+        BRE[builder-recovery.test.js<br/>13 tests]
     end
 
     subgraph slop-orchestrator[slop-orchestrator Tests — 17 tests]
@@ -38,8 +36,6 @@ graph TB
     PP -->|verify output| TX[Generated Prompt Text]
     PR -->|mock spawn| SP[child_process]
     BT -->|mock spawn| SP
-    PG -->|verify args| GT[git-sync.js]
-    BG -->|verify args| GT
 ```
 
 Comprehensive overview of the test structure, tools, and conventions for the Slop Generator monorepo.
@@ -79,7 +75,7 @@ tests/
 │   │   └── sample-plan.txt       # Sample planning output
 │   ├── planner-prompt.test.js    # 8 tests — buildPlanPrompt/buildAgentPrompt
 │   ├── planner-runner.test.js    # 7 tests — configureProvider/runCline (mocked)
-│   ├── planner-gitsync.test.js   # 5 tests — git-sync.js patterns
+
 │   └── planner-recovery.test.js  # 14 tests — loadState, saveState, recoverPlannerState
 │
 └── slop-builder/
@@ -89,15 +85,14 @@ tests/
     │   └── sample-plan.md        # Full 7-phase plan with test command
     ├── builder-database.test.js  # 9 tests — isAlreadyBuilt/updateDatabase
     ├── builder-tests.test.js     # 7 tests — runTests retry logic
-    ├── builder-prompt.test.js    # 12 tests — buildDeepPlanPrompt/buildExecutePrompt
-    ├── builder-gitsync.test.js   # 1 test — orphan branch push workflow
-    └── builder-recovery.test.js  # 12 tests — loadState, saveState, reconcileProjectsDir, recoverBuilderState
+    ├── builder-prompt.test.js    # 28 tests — buildDeepPlanPrompt/buildExecutePrompt/buildSimpleTaskPrompt
+    └── builder-recovery.test.js  # 13 tests — loadState, saveState, reconcileProjectsDir, recoverBuilderState
 
 └── slop-orchestrator/
     └── orchestrator.test.js      # 17 tests — state machine, turn flips, error cases, state persistence
 ```
 
-**Total: 135 tests across 13 files**
+**Total: 145 tests across 11 files**
 
 ## Test Categories
 
@@ -136,11 +131,6 @@ Tests that generated prompts contain required instructions.
 ### Agent Runner Tests (`tests/slop-planner/planner-runner.test.js`)
 Tests for `configureProvider()` and `runCline()` with mocked spawn/fs.
 - Directory creation, config writing, cline invocation, success output, error propagation, timeout
-
-### Git Sync Tests
-Tests for git-sync.js patterns (orphan branch, .gitignore isolation, push flow).
-- Planner: 5 pattern-verification tests
-- Builder: 1 integration test (branch naming + .gitignore content)
 
 ## Mocking Strategy
 

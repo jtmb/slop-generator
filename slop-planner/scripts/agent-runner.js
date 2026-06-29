@@ -8,9 +8,10 @@
  */
 
 import { spawnSync } from 'child_process';
-import { mkdirSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
+import https from 'https';
 import http from 'http';
 import dotenv from 'dotenv';
 import axios from 'axios';
@@ -27,6 +28,10 @@ const PROVIDER = process.env.CLINE_PROVIDER || 'lmstudio';
 const BASE_URL = process.env.CLINE_API_BASE_URL || 'http://host.docker.internal:1234/v1';
 const MODEL = process.env.CLINE_MODEL || 'qwen/qwen3.5-9b';
 
+// slop-api access
+const API_BASE_URL = process.env.API_BASE_URL || 'https://slop-api:3443';
+const API_KEY = process.env.API_KEY || '';
+
 // slop-orchestrator coordination
 const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || 'http://slop-orchestrator:3444';
 
@@ -36,6 +41,18 @@ const orch = axios.create({
   httpAgent: new http.Agent({ keepAlive: false }),
   timeout: 10000,
 });
+
+// Self-signed cert on internal Docker network — skip verification
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+
+/** Shared axios instance for slop-api calls. */
+const api = axios.create({
+  baseURL: API_BASE_URL,
+  httpsAgent,
+  timeout: 30000,
+});
+
+let jwtToken = null;
 
 /**
  * Configure cline provider by writing providers.json
@@ -73,7 +90,10 @@ function configureProvider() {
  * Uses spawnSync with argument array to avoid shell quoting issues entirely.
  */
 function runCline(prompt) {
-  const args = ['-P', PROVIDER, prompt];
+  // --json: ensures tool output is not truncated (non-json mode reports "ok"
+  // instead of actual command output, causing Cline to count false errors)
+  // --retries: prevents premature abort when model tool calls need retry
+  const args = ['-P', PROVIDER, '--json', '--retries', '20', prompt];
   logger.info({ promptPreview: prompt.substring(0, 80) }, 'Cline started');
 
   const result = spawnSync('cline', args, {
@@ -107,7 +127,7 @@ Follow these steps:
 3. Analyze what categories and ideas already exist to avoid duplicates.
 4. Formulate a detailed plan for ONE new, unique app idea.
 
-Write your plan to /app/plan.txt using the file system tool. Use EXACTLY this format:
+Write your plan to /app/plan.txt using run_commands with node -e and fs.writeFileSync:
 
 **App Name**: {proposed app name}
 **Category**: {category}
@@ -115,6 +135,11 @@ Write your plan to /app/plan.txt using the file system tool. Use EXACTLY this fo
 **Why It's Unique**: {how it differs from existing ideas in db.md}
 **Key Features**: {2-3 bullet points}
 **Target Audience**: {who}
+
+TOOL USAGE RULES:
+- Use run_commands for ALL file operations. Split command and args: {"command":"node","args":["-e","require('fs').writeFileSync('/app/plan.txt','content')"]}
+- NEVER use the editor tool — it is broken and will fail.
+- For multi-line files, use \\n inside the string argument to writeFileSync.
 
 IMPORTANT: Do NOT create any files in apps/. Do NOT modify db.md. Just research, plan, and write /app/plan.txt.`;
 }
@@ -130,10 +155,273 @@ The Planning Module has written its plan to /app/plan.txt. Read that file first.
 Your job is to execute this plan. Follow these steps:
 1. Read the file /app/plan.txt to get the plan.
 2. Read the file db.md to confirm current state.
-3. Create the app idea markdown file in the apps/ directory.
-4. Update db.md to add the new idea to the database.
+3. Create the app idea markdown file in the apps/ directory using run_commands with node -e and fs.writeFileSync.
+4. Update db.md to add the new idea to the database using node -e with fs.readFileSync + fs.appendFileSync.
 
-IMPORTANT: You MUST use your file system tools to create and update files. Do not just describe what you would do — actually do it.`;
+TOOL USAGE RULES:
+- Use run_commands for ALL file operations. Split command and args: {"command":"node","args":["-e","require('fs').writeFileSync('apps/idea.md','content')"]}
+- NEVER use the editor tool — it is broken and will fail.
+- For multi-line files, use \\n inside the string argument to writeFileSync.
+- To append to db.md, use: node -e "require('fs').appendFileSync('db.md','\\n| ... |')"
+
+IMPORTANT: Actually create and update the files — do not just describe what you would do.`;
+}
+
+/**
+ * Authenticate with slop-api and cache the JWT token.
+ */
+async function authenticate() {
+  if (jwtToken) return jwtToken;
+
+  logger.info({ apiBaseUrl: API_BASE_URL }, 'Authenticating with slop-api');
+  const { data } = await api.post('/api/v1/auth/token', { api_key: API_KEY });
+  jwtToken = data.token;
+  logger.info('Authenticated with slop-api');
+  return jwtToken;
+}
+
+/**
+ * Parse a planner app markdown file into the JSON shape expected by POST /api/v1/ideas.
+ *
+ * The planner's Cline agent writes files with sections:
+ *   # Name, ## Overview, ## Problem Solved, ## Target Audience,
+ *   ## Key Features, ## Monetization Strategy, ## Tech Stack Suggestions,
+ *   ## Implementation Plan
+ *
+ * Returns null if the file can't be parsed into a valid idea.
+ */
+function parsePlannerAppFile(filePath) {
+  if (!existsSync(filePath)) return null;
+
+  const content = readFileSync(filePath, 'utf-8');
+  const lines = content.split('\n');
+
+  // Title is the first # heading
+  const name = (lines.find(l => l.startsWith('# ')) || '').replace(/^# /, '').trim();
+  if (!name) return null;
+
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/[\s_]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  // Extract sections between ## headings
+  const getSection = (heading) => {
+    const startIdx = lines.findIndex(l => l.toLowerCase().startsWith(`## ${heading.toLowerCase()}`));
+    if (startIdx === -1) return '';
+    let endIdx = lines.findIndex((l, i) => i > startIdx && l.startsWith('## '));
+    if (endIdx === -1) endIdx = lines.length;
+    return lines.slice(startIdx + 1, endIdx).join('\n').trim();
+  };
+
+  const overview = getSection('Overview');
+  const problemSolved = getSection('Problem Solved');
+  const targetAudienceRaw = getSection('Target Audience');
+  const keyFeaturesRaw = getSection('Key Features');
+  const monetizationRaw = getSection('Monetization Strategy');
+  const techStackRaw = getSection('Tech Stack Suggestions');
+  const implementationPlanRaw = getSection('Implementation Plan');
+
+  // Parse target audience as array of strings (comma-separated or newline-separated)
+  const targetAudience = targetAudienceRaw
+    ? targetAudienceRaw.split(/[,\n]/).map(s => s.replace(/^[-*\d.]+\s*/, '').trim()).filter(Boolean)
+    : [];
+
+  // Parse key features — numbered items or bullet points
+  const keyFeatures = keyFeaturesRaw
+    ? keyFeaturesRaw.split('\n')
+        .filter(l => /^[\d]+\.|^[-*]/.test(l.trim()))
+        .map(l => {
+          const cleaned = l.replace(/^[\d]+\.\s*\*?\*?|^[-*]\s+/, '').trim();
+          // Split bold title from description: **Title**: description
+          const match = cleaned.match(/^\*{0,2}([^*:]+?)\*{0,2}:\s*(.*)/);
+          if (match) {
+            return { title: match[1].trim(), description: match[2].trim() };
+          }
+          return { title: cleaned, description: '' };
+        })
+    : [];
+
+  // Parse monetization as array of strings
+  const monetization = monetizationRaw
+    ? monetizationRaw.split('\n')
+        .filter(l => /^[\d]+\.|^[-*]/.test(l.trim()))
+        .map(l => l.replace(/^[\d]+\.\s*|^[-*]\s+/, '').trim())
+        .filter(Boolean)
+    : [];
+
+  // Parse tech stack into key-value pairs from bullet list (e.g. "- **Frontend**: React")
+  const techStack = {};
+  if (techStackRaw) {
+    const techLines = techStackRaw.split('\n').filter(l => /^[-*]/.test(l.trim()));
+    for (const line of techLines) {
+      const match = line.match(/[-*]\s*\*{0,2}([^*:]+?)\*{0,2}:\s*(.*)/);
+      if (match) {
+        techStack[match[1].trim()] = match[2].trim();
+      }
+    }
+  }
+
+  return {
+    slug,
+    name,
+    overview,
+    problemSolved,
+    targetAudience,
+    keyFeatures,
+    monetization,
+    techStack,
+    implementationPlan: implementationPlanRaw,
+    dateAdded: new Date().toISOString().split('T')[0],
+  };
+}
+
+/**
+ * Parse the planner's db.md to extract all idea entries as slug objects.
+ *
+ * The planner db uses a custom format:
+ *   ## Idea #N: Name
+ *   - **File Path**: `apps/slug.md`
+ *   - **Category**: ...
+ *   - **Status**: Idea Generated
+ *   - **Date Added**: YYYY-MM-DD
+ *
+ * Returns an array of { slug, name, filePath, category, status, dateAdded } objects.
+ */
+function parsePlannerDb() {
+  const dbPath = '/app/db.md';
+  if (!existsSync(dbPath)) return [];
+
+  const content = readFileSync(dbPath, 'utf-8');
+  const ideas = [];
+  const blocks = content.split(/^## Idea #\d+:/m);
+
+  for (const block of blocks) {
+    const nameMatch = block.match(/^\s*(.+)/m);
+    if (!nameMatch) continue;
+
+    const name = nameMatch[1].trim();
+    const filePathMatch = block.match(/\*\*File Path\*\*:\s*`?([^`\n]+)`?/);
+    const categoryMatch = block.match(/\*\*Category\*\*:\s*(.+)/);
+    const statusMatch = block.match(/\*\*Status\*\*:\s*(.+)/);
+    const dateMatch = block.match(/\*\*Date Added\*\*:\s*(.+)/);
+
+    const fullPath = filePathMatch ? `/app/${filePathMatch[1].trim()}` : null;
+    const slugFromPath = filePathMatch
+      ? filePathMatch[1].replace(/^apps\//, '').replace(/\.md$/, '')
+      : name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+    ideas.push({
+      slug: slugFromPath,
+      name,
+      filePath: fullPath,
+      category: (categoryMatch?.[1] || '').trim(),
+      status: (statusMatch?.[1] || '').trim(),
+      dateAdded: (dateMatch?.[1] || '').trim(),
+    });
+  }
+
+  return ideas;
+}
+
+// Track which slugs have already been posted to avoid redundant API calls
+let postedSlugs = new Set();
+const POSTED_SLUGS_PATH = '/app/.posted-slugs.json';
+
+function loadPostedSlugs() {
+  try {
+    if (existsSync(POSTED_SLUGS_PATH)) {
+      const data = JSON.parse(readFileSync(POSTED_SLUGS_PATH, 'utf-8'));
+      postedSlugs = new Set(data.slugs || []);
+      logger.info({ count: postedSlugs.size }, 'Loaded posted-slugs tracker');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to load posted-slugs tracker — starting fresh');
+    postedSlugs = new Set();
+  }
+}
+
+function savePostedSlugs() {
+  try {
+    writeFileSync(POSTED_SLUGS_PATH, JSON.stringify({ slugs: [...postedSlugs] }, null, 2));
+  } catch (err) {
+    logger.warn({ err }, 'Failed to save posted-slugs tracker');
+  }
+}
+
+/**
+ * Post any newly generated ideas from the planner's db.md to slop-api.
+ *
+ * Walks through the planner's db.md entries. For each unposted slug:
+ *   1. Reads the app file from apps/
+ *   2. Parses it into the API's POST shape
+ *   3. POSTs to slop-api (idempotent — 409 Conflict = already exists)
+ *   4. Tracks posted slugs to avoid redundant calls
+ */
+async function postIdeasToApi() {
+  if (!API_KEY) {
+    logger.warn('No API_KEY set — cannot post ideas to slop-api');
+    return;
+  }
+
+  await authenticate();
+
+  const ideas = parsePlannerDb();
+  if (ideas.length === 0) {
+    logger.info('No ideas found in planner db.md to post');
+    return;
+  }
+
+  let posted = 0;
+  let skipped = 0;
+
+  for (const idea of ideas) {
+    if (postedSlugs.has(idea.slug)) {
+      skipped++;
+      continue;
+    }
+
+    const appFilePath = idea.filePath || `/app/apps/${idea.slug}.md`;
+    const payload = parsePlannerAppFile(appFilePath);
+
+    if (!payload) {
+      logger.warn({ slug: idea.slug, path: appFilePath }, 'Could not parse app file for posting');
+      postedSlugs.add(idea.slug); // Don't retry forever
+      continue;
+    }
+
+    try {
+      const token = await authenticate();
+      const res = await api.post('/api/v1/ideas', payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      logger.info({ slug: idea.slug, status: res.status }, 'Posted idea to slop-api');
+      postedSlugs.add(idea.slug);
+      posted++;
+    } catch (err) {
+      if (err.response?.status === 409) {
+        // Idempotent — slug already exists, mark as posted
+        logger.info({ slug: idea.slug }, 'Idea already exists on API (409) — marking as posted');
+        postedSlugs.add(idea.slug);
+        skipped++;
+      } else if (err.response?.status === 401 || err.response?.status === 403) {
+        // Auth failure — reset token and retry once
+        jwtToken = null;
+        logger.warn({ slug: idea.slug, status: err.response.status }, 'Auth failure posting idea — will retry next cycle');
+        break; // Stop this batch, retry after re-auth next cycle
+      } else {
+        logger.warn({ slug: idea.slug, err: err.message }, 'Failed to post idea to slop-api');
+        // Don't add to postedSlugs — will retry next cycle
+      }
+    }
+  }
+
+  savePostedSlugs();
+  if (posted > 0 || skipped > 0) {
+    logger.info({ posted, skipped, totalTracked: postedSlugs.size }, 'Idea posting cycle complete');
+  }
 }
 
 /**
@@ -216,7 +504,7 @@ async function recoverPlannerState(statePath, checkCanRunFn = checkCanRun) {
   const iter = state.iteration;
 
   try {
-    if (state.phase === 'planning' || state.phase === 'execution' || state.phase === 'git-sync') {
+    if (state.phase === 'planning' || state.phase === 'execution') {
       // Re-run planning if interrupted during planning
       if (state.phase === 'planning') {
         logger.info({ phase: 'planning', iteration: iter }, 'Recovery: re-running planning phase');
@@ -230,26 +518,19 @@ async function recoverPlannerState(statePath, checkCanRunFn = checkCanRun) {
         logger.info({ phase: 'execution', iteration: iter }, 'Recovery: re-running execution phase');
         await checkCanRunFn();
         runCline(buildAgentPrompt());
-        saveState(sp, { iteration: iter, phase: 'git-sync', currentSlug: null });
       }
 
-      // Re-run git sync if interrupted during git-sync
-      logger.info({ phase: 'git-sync', iteration: iter }, 'Recovery: re-running git sync phase');
+      // Post ideas to API (recovery from mid-iteration crash)
       try {
-        const gitResult = spawnSync('node', ['scripts/git-sync.js', '--once'], {
-          encoding: 'utf-8',
-          timeout: 60000,
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
-        if (gitResult.stdout?.trim()) {
-          logger.info({ output: gitResult.stdout.trim().slice(0, 500) }, 'Git sync output (recovery)');
-        }
-      } catch (gitError) {
-        logger.warn({ err: gitError }, 'Git sync error during recovery (non-fatal)');
+        await postIdeasToApi();
+        logger.info('Recovery: posted ideas to API');
+        saveState(sp, { iteration: iter, phase: 'complete', currentSlug: null });
+        await reportProgress();
+        return true;
+      } catch (postErr) {
+        logger.warn({ err: postErr }, 'Recovery: failed to post ideas to API');
+        return false;
       }
-
-      // Mark complete and report progress
-      saveState(sp, { iteration: iter, phase: 'complete', currentSlug: null });
     }
   } catch (recoveryError) {
     logger.error({ err: recoveryError, iteration: iter, phase: state.phase }, 'Recovery failed — will restart iteration');
@@ -266,6 +547,9 @@ async function main() {
 
   configureProvider();
 
+  // Load the posted-slugs tracker so we don't re-post existing ideas
+  loadPostedSlugs();
+
   // Recover from crash/restart — get the iteration to start from
   const recoveredIteration = await recoverPlannerState();
   let iteration = recoveredIteration;
@@ -275,7 +559,13 @@ async function main() {
     await reportProgress();
   }
 
-  while (iteration < settings.max_iterations) {
+  while (true) {
+    // Reset iteration counter for new batches — the orchestrator controls pacing
+    if (iteration >= settings.max_iterations) {
+      logger.info({ previousIteration: iteration }, 'Resetting iteration counter for next batch');
+      iteration = 0;
+    }
+
     iteration++;
 
     try {
@@ -300,27 +590,8 @@ async function main() {
       runCline(buildAgentPrompt());
       logger.info({ phase: 'execution', iteration }, 'Execution complete');
 
-      // Save state: about to start git sync
-      saveState(null, { iteration, phase: 'git-sync', currentSlug: null });
-
-      // Phase 3: Git sync — commit and push any new/changed files
-      logger.info({ phase: 'git-sync', iteration }, 'Git sync phase');
-      try {
-        const gitResult = spawnSync('node', ['scripts/git-sync.js', '--once'], {
-          encoding: 'utf-8',
-          timeout: 60000,
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
-        if (gitResult.stdout?.trim()) {
-          logger.info({ output: gitResult.stdout.trim().slice(0, 500) }, 'Git sync output');
-        }
-        if (gitResult.stderr?.trim()) {
-          logger.warn({ stderr: gitResult.stderr.trim() }, 'Git sync stderr');
-        }
-      } catch (gitError) {
-        logger.warn({ err: gitError }, 'Git sync error (non-fatal)');
-      }
-      logger.info({ phase: 'git-sync', iteration }, 'Git sync complete');
+      // Post newly generated ideas to slop-api so the builder can consume them
+      await postIdeasToApi();
 
       // Mark iteration complete before reporting progress
       saveState(null, { iteration, phase: 'complete', currentSlug: null });
@@ -342,7 +613,6 @@ async function main() {
     }
   }
 
-  logger.info({ totalIterations: iteration }, 'Agent loop completed');
 }
 
 // Graceful shutdown

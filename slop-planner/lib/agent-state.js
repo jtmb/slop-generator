@@ -8,7 +8,7 @@
  * KEEP IN SYNC with slop-builder/lib/agent-state.js — identical logic.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'fs';
 import { dirname } from 'path';
 
 const DEFAULT_STATE_PATH = '/app/.agent-state.json';
@@ -77,5 +77,18 @@ export function saveState(statePath = DEFAULT_STATE_PATH, { iteration, phase, cu
 
   mkdirSync(dirname(sp), { recursive: true });
   writeFileSync(tmpPath, JSON.stringify(payload, null, 2), 'utf-8');
-  renameSync(tmpPath, sp);
+
+  try {
+    renameSync(tmpPath, sp);
+  } catch (e) {
+    // Atomic rename can fail with EBUSY on Docker volume bind mounts.
+    // Fall back to non-atomic direct write — acceptable since state is
+    // small (<1KB) and we only read after renameSync has succeeded.
+    if (e.code === 'EBUSY') {
+      writeFileSync(sp, JSON.stringify(payload, null, 2), 'utf-8');
+      try { unlinkSync(tmpPath); } catch (_) { /* ignore cleanup failure */ }
+    } else {
+      throw e;
+    }
+  }
 }

@@ -84,10 +84,17 @@ describe('getDbEntry', () => {
       '## Project #2: Other App',
       '- **Slug**: `other-app`',
       '- **Status**: Tests Failed',
+      '',
+      '## Project #3: Partial App',
+      '- **Slug**: `partial-app`',
+      '- **Status**: Complete (tests failed)',
     ].join('\n'));
 
     expect(getDbEntry('test-app', dbPath)).toBe('Complete');
-    expect(getDbEntry('other-app', dbPath)).toBe('Tests Failed');
+    // Tests Failed returns null to allow re-processing — see C5 reconciliation retry
+    expect(getDbEntry('other-app', dbPath)).toBeNull();
+    // Complete (tests failed) also returns null — tests didn't pass so git push never happened
+    expect(getDbEntry('partial-app', dbPath)).toBeNull();
     expect(getDbEntry('unknown', dbPath)).toBeNull();
 
     fs.unlinkSync(dbPath);

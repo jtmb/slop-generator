@@ -12,11 +12,9 @@ flowchart TB
     P1 -->|cline reads AGENTS.md + db.md| W[Writes /app/plan.txt]
     W --> P2[Phase 2: Execution]
     P2 -->|cline reads plan.txt + db.md| C[Creates apps/name.md<br/>Updates db.md]
-    C --> P3[Phase 3: API Push + Git Sync]
+    C --> P3[Phase 3: Post to API]
     P3 -->|POST /api/v1/ideas| A[slop-api]
-    P3 -->|git-sync.js --once| G[Git Remote]
     A --> S
-    G --> S
 ```
 
 Each iteration has three phases:
@@ -33,35 +31,61 @@ Each iteration has three phases:
 - cline creates the app idea file in apps/{name}.md
 - cline updates db.md with the new entry
 
-**Phase 3: API Push + Git Sync**
-- `agent-runner.js` pushes the new idea to slop-api at POST /api/v1/ideas
-- `agent-runner.js` spawns `git-sync.js --once` for git commit/push
-- Initializes git repo on first run (`.gitignore` tracks only `apps/`)
-- Commits any new or changed files
-- Pushes to remote if `GIT_REPO_URL` is configured
+**Phase 3: Post to API**
+- `agent-runner.js` calls `postIdeasToApi()` to push ideas to slop-api
+- Git operations are handled by the orchestrator at batch boundaries
 
 ## API Integration
 
 The planner authenticates with slop-api using a shared `API_KEY`:
 1. POST /api/v1/auth/token with the API_KEY to get a JWT
 2. POST /api/v1/ideas with the JWT to push each new idea
-3. API push is best-effort — git sync succeeds independently
+
+### postIdeasToApi() — Deterministic Bulk Push
+
+`postIdeasToApi()` runs every iteration (after idea generation and on startup recovery). It walks all entries in `db.md` and POSTs any new slugs to slop-api:
+
+```mermaid
+flowchart TD
+    START[postIdeasToApi] --> AUTH[authenticate with slop-api]
+    AUTH --> LOAD[loadPostedSlugs from .posted-slugs.json]
+    LOAD --> PARSE[parsePlannerDbAll: extract all slugs from db.md]
+    PARSE --> FILTER{slug already in<br/>posted-slugs?}
+    FILTER -->|yes| SKIP[Skip — already posted]
+    FILTER -->|no| POST["POST /api/v1/ideas<br/>with parsed app data"]
+    POST --> RESP{Response?}
+    RESP -->|201 Created| SAVE[savePostedSlugs: add slug]
+    RESP -->|409 Conflict| SAVE
+    RESP -->|401/403| CLEAR["jwtToken = null<br/>break batch"]
+    RESP -->|other err| NEXT[Skip — retry next cycle]
+    SAVE --> NEXT
+    SKIP --> NEXT
+    NEXT --> MORE{More slugs?}
+    MORE -->|yes| FILTER
+    MORE -->|no| DONE[Done]
+```
+
+**Key design decisions:**
+- **Idempotent**: 409 Conflict is treated as success — the slug is already there, mark it posted
+- **Persistent tracking**: `.posted-slugs.json` survives restarts (bind-mounted volume), so re-posting is always safe
+- **Error resilience**: Network errors skip individual slugs and retry on next cycle; auth errors clear the JWT and break the batch
+- **Parsed format**: `parsePlannerAppFile()` converts planner's markdown into the API's structured JSON shape (name, slug, overview, problemSolved, targetAudience, keyFeatures, monetization, techStack, implementationPlan)
 
 ## Configuration
 
 - **config/settings.json**: max_iterations (default 50), timeout_ms (default 300000)
-- **config/.env**: CLINE_API_BASE_URL, CLINE_MODEL, API_KEY, GIT_REPO_URL
+- **config/.env**: CLINE_API_BASE_URL, CLINE_MODEL, API_KEY
 - Environment variables override settings.json values
 
-### Git Sync Variables
+### API Connection Variables
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GIT_REPO_URL` | — | Remote URL with auth (e.g. `https://user:token@github.com/owner/repo.git`) |
-| `GIT_BRANCH` | `main` | Branch to push to |
-| `GIT_USER_NAME` | `Slop Generator` | Commit author name |
-| `GIT_USER_EMAIL` | `slop-generator@localhost` | Commit author email |
-| `GIT_SYNC_DB` | `false` | Set `true` to also track `db.md` |
+| `API_KEY` | — | Pre-shared key for JWT auth with slop-api |
+| `CLINE_API_BASE_URL` | `http://192.168.0.13:1234/v1` | LM Studio endpoint |
+| `CLINE_MODEL` | `qwen/qwen3.5-9b` | Model identifier for LM Studio |
+
+> **Note**: Git operations are handled entirely by slop-orchestrator. The planner no longer syncs to git.
 
 ## Generated Ideas
 
@@ -70,7 +94,7 @@ Each idea is a markdown file in apps/ following the template in slop-planner/AGE
 ## Container
 
 - **Base Image**: node:22-slim → multi-stage build
-- **Runtime Dependencies**: tini, git, ca-certificates, cline@3.0.31
+- **Runtime Dependencies**: tini, git, ca-certificates, cline@3.0.29
 - **User**: node (uid 1000, non-root)
 - **Health Check**: node -e "console.log('healthy')"
 - **Entrypoint**: tini → node scripts/agent-runner.js
