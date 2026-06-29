@@ -21,7 +21,12 @@ COPY . .
 FROM node:22-slim AS runtime
 
 # Install runtime dependencies and Cline CLI globally
-RUN apt-get update && apt-get install -y ca-certificates tini && \
+# Install runtime tools and Cline CLI globally.
+# git — for project version control
+# curl — for API calls from shell (health checks, downloads)
+# procps — for pgrep/pkill (process management patterns)
+# tini — for PID 1 signal handling
+RUN apt-get update && apt-get install -y ca-certificates tini git curl procps && \
     rm -rf /var/lib/apt/lists/* && \
     npm install -g cline@3.0.29 --no-cache
 
@@ -47,7 +52,6 @@ COPY --from=builder /app/apps ./apps
 ENV CLINE_PROVIDER=lmstudio
 ENV CLINE_API_BASE_URL=http://host.docker.internal:1234/v1
 ENV CLINE_MODEL=qwen/qwen3.5-9b
-ENV NODE_ENV=production
 
 # Health check (containers.instructions.md requirement)
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \

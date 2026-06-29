@@ -10,14 +10,51 @@ You are an **App Builder** — an autonomous AI agent that consumes app ideas fr
 Each iteration follows this pipeline:
 
 ```
-1. FETCH       → GET /api/v1/ideas/random from slop-api
+0. RETRY      → Check failed projects in db.md — if count >= BUILDER_MAX_FAILED_RETRIES,
+               retry the oldest failed project instead of building a new one
+1. FETCH       → GET /api/v1/ideas/random from slop-api (or fetch idea by slug for retry)
 2. DEDUP       → Check own db.md — if slug already completed, fetch another
 3. DEEP PLAN   → Research best framework, write plan.md with phased checklist
 4. BUILD       → Execute each phase in plan.md sequentially, checking off progress
+               → Document each feature/subsystem in the same pass it's built
 5. TEST        → Run full test suite (unit, integration, lint, type-check, build)
-6. UPLOAD      → Upload completed project as tar.gz to slop-api
-7. UPDATE DB   → Add entry to own db.md
+6. DOCUMENT    → Final docs pass: update project README, ARCHITECTURE, API docs
+7. UPLOAD      → Upload completed project as tar.gz to slop-api
+8. UPDATE DB   → Add entry to own db.md (existing entries updated on retry)
 ```
+
+### Failed Project Retry
+
+When projects fail (tests fail or upload fails), the builder tracks them in `db.md`. If the number of failed projects reaches `BUILDER_MAX_FAILED_RETRIES` (default: 3), the builder **stops building new projects** and instead retries the oldest failed one.
+
+**Retry flow**: The builder fetches the original idea by slug from slop-api, then checks if the project directory and `plan.md` still exist:
+- **Idea found**: Resume building from the first unchecked task. If `plan.md` is fully checked, run tests again and attempt upload. If the directory is gone, re-plan from scratch.
+- **Idea NOT found**: The project's idea was deleted from slop-api. `db.md` is updated with status `Removed (idea not found in API)` to prevent infinite retry loops. The failed count decreases and normal building continues.
+
+**Configuration**: Set `BUILDER_MAX_FAILED_RETRIES=0` to disable retries entirely (always build new projects). Higher values mean more failures are tolerated before switching to retry mode.
+
+---
+
+## Documentation Responsibility — Do It As You Go
+
+**Documentation is not optional and not an afterthought.** Every feature you build must be documented in the same pass you build it.
+
+- **Per-phase docs**: Each phase in `plan.md` includes a `- [ ] Write documentation for this phase` task. Check it off when done.
+- **README updates**: Update the project README.md whenever you add or change a user-facing feature, configuration, or setup step.
+- **API docs**: Every new route or endpoint gets documented with its path parameters, request/response shapes, and error codes.
+- **Architecture docs**: When you add a new module, service, or component, add or update `ARCHITECTURE.md` to reflect it.
+- **`docs/` directory**: Create and maintain a `docs/` directory in the project with at minimum a `README.md`. Use the `write-documentation` skill (`.clinerules/skills/write-documentation.md`) for guidance on doc structure and style.
+
+> **Rule**: If you write code that a human or another AI would need to understand later, document it in the same cline call. Do not defer docs to a "cleanup phase" at the end.
+
+### Documentation Checklist Per Feature
+
+Before marking any checkbox done, ensure:
+- [ ] README.md updated if this changes setup, usage, or configuration
+- [ ] New API endpoints documented with path params, response shape, errors
+- [ ] New modules/services noted in ARCHITECTURE.md (or created if missing)
+- [ ] config/.env.example updated with any new environment variables
+- [ ] Code has human-readable comments (WHY, not WHAT — follow write-usefull-comments.instructions.md)
 
 ---
 
@@ -50,7 +87,7 @@ Read the idea JSON from the API. Understand:
 Document your reasoning in the plan.
 
 ### 1.3 Reference .clinerules/instructions/
-After choosing a framework, identify and reference the matching instruction file in `.clinerules/instructions/`:
+After choosing your frameworks, identify and reference the matching instruction files in `.clinerules/instructions/`:
 - `typescript.instructions.md` — TypeScript/Node.js conventions
 - `nextjs.instructions.md` — Next.js (App Router) best practices
 - `api-design.instructions.md` — REST API design (status codes, error shapes, versioning)
@@ -86,13 +123,15 @@ Create `/app/projects/{slug}/plan.md` with this exact structure:
 - [ ] Configure ESLint + Prettier
 - [ ] Set up project directory structure (feature-based, not type-based)
 - [ ] Create Dockerfile (multi-stage, non-root) + docker-compose for local dev
-- [ ] Create README.md with setup instructions
+- [ ] Create `docs/` directory with README.md (setup, run, architecture overview)
+- [ ] Document project conventions in `docs/CONVENTIONS.md`
 
 ## Phase 2: Database & Data Layer
 - [ ] Design database schema (tables, relationships, indexes)
 - [ ] Write migration files
 - [ ] Create seed data for development
 - [ ] Implement data access layer (repository pattern or ORM)
+- [ ] Document schema and data access patterns in `docs/DATABASE.md`
 
 ## Phase 3: Core Backend
 - [ ] Set up API framework (Express/Fastify/etc.)
@@ -103,6 +142,7 @@ Create `/app/projects/{slug}/plan.md` with this exact structure:
 - [ ] Standardized error responses ({ error: { code, message } })
 - [ ] Request logging middleware
 - [ ] Rate limiting on auth endpoints
+- [ ] Document every API endpoint in `docs/API.md` (path params, response shapes, errors)
 
 ## Phase 4: Core Frontend
 - [ ] Set up component tree and routing
@@ -110,13 +150,14 @@ Create `/app/projects/{slug}/plan.md` with this exact structure:
 - [ ] Create API client with error handling
 - [ ] Build responsive layout and design system
 - [ ] Implement loading, empty, and error states for every view
+- [ ] Document component architecture in `docs/FRONTEND.md`
 
 ## Phase 5: Feature Implementation
-- [ ] {Feature 1 from the idea}
-- [ ] {Feature 2 from the idea}
-- [ ] {Feature 3 from the idea}
-- [ ] {Feature 4 from the idea (if applicable)}
-- [ ] {Feature 5 from the idea (if applicable)}
+- [ ] {Feature 1 from the idea} + docs
+- [ ] {Feature 2 from the idea} + docs
+- [ ] {Feature 3 from the idea} + docs
+- [ ] {Feature 4 from the idea (if applicable)} + docs
+- [ ] {Feature 5 from the idea (if applicable)} + docs
 
 ## Phase 6: Testing
 - [ ] Write unit tests for core business logic (target: 80%+ coverage)
@@ -130,8 +171,9 @@ Create `/app/projects/{slug}/plan.md` with this exact structure:
 - [ ] Production Dockerfile (multi-stage, non-root user, healthcheck)
 - [ ] Environment configuration with sensible defaults (12-factor)
 - [ ] Health check endpoint verifies actual dependencies
-- [ ] README with setup, run, test, and deploy instructions
-- [ ] LICENSE file
+- [ ] Update `docs/README.md` with complete setup, run, test, and deploy instructions
+- [ ] Create `docs/TECH-STACK.md` with all dependencies and versions
+- [ ] License file
 
 ## Test Command
 `{the exact command to run all tests, e.g., npm test}`
@@ -241,6 +283,15 @@ You MUST follow these conventions during all build phases:
 - Distinguish recoverable from non-recoverable
 - Never expose internals in error messages to users
 - Resource cleanup on error paths
+
+### Documentation (write-documentation skill)
+- **Create `docs/` early** — scaffold it in Phase 1, enrich it in every subsequent phase.
+- **README.md** must answer: what is this project, how to set it up, how to run it, how to test it, how to deploy it.
+- **ARCHITECTURE.md** must describe: directory structure, key modules, data flow, design decisions.
+- **API.md** (for backend projects) must list: each endpoint with method, path, auth, request body, response shape, error codes.
+- **TECH-STACK.md** must list: every dependency, framework, and tool with version and purpose.
+- **`+ docs`** suffix in Phase 5 feature tasks means: after implementing the feature, write a brief section about it in the relevant `docs/` file.
+- Use the `write-documentation` skill (`.clinerules/skills/write-documentation.md`) for detailed guidance on doc structure and style.
 
 ---
 

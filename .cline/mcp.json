@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "thread": {
+      "type": "stdio",
+      "command": "/home/brajam/repos/slop-generator/.vscode/thread-bridge/.venv/bin/python",
+      "args": ["-m", "thread_bridge.bridge"],
+      "cwd": "/home/brajam/repos/slop-generator/.vscode/thread-bridge",
+      "env": {
+        "THREAD_SERVER_URL": "http://localhost:5000",
+        "THREAD_DEFAULT_SESSION": "slop-generator",
+        "THREAD_REQUEST_TIMEOUT": "10"
+      }
+    }
+  }
+}

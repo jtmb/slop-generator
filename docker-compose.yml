@@ -184,6 +184,10 @@ services:
       # slop-orchestrator coordination
       - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-http://slop-orchestrator:3444}
 
+      # When this many projects have failed status, retry the oldest failed one
+      # instead of building a new project. Set to 0 to disable.
+      - BUILDER_MAX_FAILED_RETRIES=${BUILDER_MAX_FAILED_RETRIES:-3}
+
     volumes:
       - ./slop-builder/projects:/app/projects
       - ./slop-builder/db.md:/app/db.md

@@ -22,7 +22,12 @@ FROM node:22-slim AS runtime
 
 # Install runtime dependencies and Cline CLI globally.
 # git for branch-based project pushes, tini for PID 1 signal handling.
-RUN apt-get update && apt-get install -y ca-certificates tini && \
+# Install runtime tools and Cline CLI globally.
+# git — for git init in build projects
+# curl — for API calls from shell (health checks, downloads)
+# procps — for pgrep/pkill (process management patterns)
+# tini — for PID 1 signal handling
+RUN apt-get update && apt-get install -y ca-certificates tini git curl procps && \
     rm -rf /var/lib/apt/lists/* && \
     npm install -g cline@3.0.29 --no-cache
 
@@ -48,9 +53,11 @@ COPY --from=builder /app/projects ./projects
 ENV CLINE_PROVIDER=lmstudio
 ENV CLINE_API_BASE_URL=http://host.docker.internal:1234/v1
 ENV CLINE_MODEL=qwen/qwen3.5-9b
-ENV NODE_ENV=production
 # Accept self-signed cert from slop-api (internal Docker network)
 ENV NODE_TLS_REJECT_UNAUTHORIZED=0
+# When this many projects have failed status, retry the oldest failed one
+# instead of building a new project. Set to 0 to disable.
+ENV BUILDER_MAX_FAILED_RETRIES=3
 
 # No ports — builder is a worker, not a server
 

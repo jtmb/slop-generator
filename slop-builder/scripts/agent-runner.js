@@ -35,6 +35,12 @@ const MODEL = process.env.CLINE_MODEL || 'qwen/qwen3.5-9b';
 const API_BASE_URL = process.env.API_BASE_URL || 'https://slop-api:3443';
 const API_KEY = process.env.API_KEY || '';
 
+// Failed project retry threshold.
+// When the number of failed projects in db.md reaches this threshold,
+// the builder stops building new projects and retries the oldest failed one instead.
+// Set to 0 to disable (always build new projects regardless of failures).
+const BUILDER_MAX_FAILED_RETRIES = parseInt(process.env.BUILDER_MAX_FAILED_RETRIES || '3', 10);
+
 // slop-orchestrator coordination
 const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || 'http://slop-orchestrator:3444';
 
@@ -265,6 +271,96 @@ function isAlreadyBuilt(slug) {
   );
 
   return entryRegex.test(content);
+}
+
+/**
+ * Count failed projects in db.md and return them sorted oldest-first.
+ * A project is "failed" if its status indicates the build completed but
+ * didn't result in a successful push (upload or tests failed).
+ *
+ * Failed statuses:
+ *   - "Built (push failed, tests failed)"
+ *   - "Built (push failed)"
+ *   - "Complete (tests failed)"
+ *
+ * Returns an array of { slug, name } ordered by appearance in db.md
+ * (oldest first). Empty array if none found or db.md doesn't exist.
+ */
+function getFailedProjects() {
+  if (!existsSync(DB_PATH)) return [];
+
+  const content = readFileSync(DB_PATH, 'utf-8');
+  const lines = content.split('\n');
+  const failed = [];
+  let currentEntry = null;
+
+  for (const line of lines) {
+    // Start of a new project entry
+    const entryMatch = line.match(/^## Project #(\d+): (.+)$/);
+    if (entryMatch) {
+      // If we were tracking a previous entry and it was failed, save it
+      if (currentEntry && currentEntry.failed) {
+        failed.push({ slug: currentEntry.slug, name: currentEntry.name });
+      }
+      currentEntry = { name: entryMatch[2].trim(), slug: null, failed: false };
+      continue;
+    }
+
+    if (!currentEntry) continue;
+
+    // Capture slug
+    const slugMatch = line.match(/^- \*\*Slug\*\*: `(.+)`$/);
+    if (slugMatch) {
+      currentEntry.slug = slugMatch[1];
+      continue;
+    }
+
+    // Capture status
+    const statusMatch = line.match(/^- \*\*Status\*\*: (.+)$/);
+    if (statusMatch) {
+      const status = statusMatch[1].trim();
+      currentEntry.failed =
+        status.includes('push failed') ||
+        status === 'Complete (tests failed)' ||
+        status === 'Tests Failed';
+      continue;
+    }
+  }
+
+  // Don't forget last entry
+  if (currentEntry && currentEntry.failed) {
+    failed.push({ slug: currentEntry.slug, name: currentEntry.name });
+  }
+
+  return failed;
+}
+
+/**
+ * Fetch a specific idea by slug from slop-api.
+ * Returns the full idea JSON or null if not found.
+ */
+async function fetchIdeaBySlug(slug) {
+  const token = await authenticate();
+  try {
+    const { data } = await api.get(`/api/v1/ideas/${slug}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return data;
+  } catch (err) {
+    if (err.response?.status === 401 || err.response?.status === 403) {
+      jwtToken = null;
+      const newToken = await authenticate();
+      const { data } = await api.get(`/api/v1/ideas/${slug}`, {
+        headers: { Authorization: `Bearer ${newToken}` },
+      });
+      return data;
+    }
+    if (err.response?.status === 404) {
+      logger.warn({ slug }, 'Idea not found in API — may have been removed');
+      return null;
+    }
+    throw err;
+  }
 }
 
 /**
@@ -1015,23 +1111,50 @@ async function main() {
 
       logger.info({ iteration, maxIterations: settings.max_iterations }, 'Iteration start');
 
-      // Step 1: Fetch random idea + dedup
-      logger.info({ iteration }, 'Fetching random idea');
-      let idea;
-      let attempts = 0;
-      const maxFetchAttempts = 10;
+      // Step 0: Check for failed projects that need retrying
+      // When the number of failed projects reaches BUILDER_MAX_FAILED_RETRIES,
+      // retry the oldest failed project instead of building something new.
+      let idea = null;
 
-      while (attempts < maxFetchAttempts) {
-        attempts++;
-        idea = await fetchRandomIdea();
-        logger.info({ name: idea.name, slug: idea.slug, attempt: attempts }, 'Got idea');
-
-        if (!isAlreadyBuilt(idea.slug)) {
-          break; // New project — proceed
+      if (BUILDER_MAX_FAILED_RETRIES > 0) {
+        const failedProjects = getFailedProjects();
+        if (failedProjects.length >= BUILDER_MAX_FAILED_RETRIES) {
+          const target = failedProjects[0]; // oldest first
+          logger.info({
+            failedCount: failedProjects.length,
+            threshold: BUILDER_MAX_FAILED_RETRIES,
+            retrySlug: target.slug,
+            retryName: target.name
+          }, 'Failed project threshold reached — retrying oldest failed project');
+          idea = await fetchIdeaBySlug(target.slug);
+          if (idea) {
+            logger.info({ slug: target.slug, name: idea.name }, 'Retrying failed project');
+          } else {
+            logger.warn({ slug: target.slug }, 'Failed project not found in API — removing from retry consideration');
+            // Prevent infinite retry loop: mark as removed so getFailedProjects() won't pick it up again
+            updateDatabase(target.slug, target.name, 'Removed (idea not found in API)');
+          }
         }
+      }
 
-        logger.info({ attempt: attempts, slug: idea.slug }, 'Already built — fetching another');
-        idea = null;
+      // Step 1: Fetch random idea + dedup (only if not retrying)
+      if (!idea) {
+        logger.info({ iteration }, 'Fetching random idea');
+        let attempts = 0;
+        const maxFetchAttempts = 10;
+
+        while (attempts < maxFetchAttempts) {
+          attempts++;
+          idea = await fetchRandomIdea();
+          logger.info({ name: idea.name, slug: idea.slug, attempt: attempts }, 'Got idea');
+
+          if (!isAlreadyBuilt(idea.slug)) {
+            break; // New project — proceed
+          }
+
+          logger.info({ attempt: attempts, slug: idea.slug }, 'Already built — fetching another');
+          idea = null;
+        }
       }
 
       if (!idea) {
@@ -1295,4 +1418,4 @@ if (isMainModule) {
   });
 }
 
-export { configureProvider, runCline, isAlreadyBuilt, runTests, updateDatabase, uploadProject, buildDeepPlanPrompt, buildExecutePrompt, buildSimpleTaskPrompt, buildTaskRetryPrompt, parseNextUncheckedTask, markTaskDone, extractPlanContext, killHubDaemons, authenticate, fetchRandomIdea, checkCanRun, reportProgress, getDbEntry, reconcileProjectsDir, recoverBuilderState, loadState, saveState };
+export { configureProvider, runCline, isAlreadyBuilt, runTests, updateDatabase, uploadProject, buildDeepPlanPrompt, buildExecutePrompt, buildSimpleTaskPrompt, buildTaskRetryPrompt, parseNextUncheckedTask, markTaskDone, extractPlanContext, killHubDaemons, authenticate, fetchRandomIdea, fetchIdeaBySlug, checkCanRun, reportProgress, getDbEntry, getFailedProjects, reconcileProjectsDir, recoverBuilderState, loadState, saveState };
